@@ -32,13 +32,17 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.json.JSONArray
 import org.json.JSONObject
+import java.math.BigDecimal
+import java.math.RoundingMode
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
@@ -153,7 +157,25 @@ private val translations: Map<String, Map<Lang, String>> = mapOf(
         "Model forecast (Open-Meteo), UTC. QNH ≈ sea-level pressure; QFE computed from airport elevation (ISA). Not for flight planning.",
         "Prévision issue d'un modèle (Open-Meteo), UTC. QNH ≈ pression au niveau de la mer ; QFE calculé à partir de l'altitude de l'aéroport (ISA). Ne pas utiliser pour la préparation du vol.",
         "توقعات من نموذج رقمي (Open-Meteo) بتوقيت UTC. QNH ≈ الضغط عند مستوى البحر، وQFE محسوب من ارتفاع المطار (ISA). لا تعتمد عليها في تخطيط الرحلات."
-    )
+    ),
+
+    // ---- calculator / converters tab
+    "tab_calc" to tr("CALC", "CALCUL", "الحاسبة"),
+    "calc_title" to tr("CALCULATOR & CONVERTERS", "CALCULATRICE ET CONVERTISSEURS", "الحاسبة والمحوّلات"),
+    "mode_calc" to tr("Calc", "Calcul", "حاسبة"),
+    "calc_error" to tr("Error", "Erreur", "خطأ"),
+    "conv_hint" to tr(
+        "Type in any field, the others update instantly.",
+        "Saisissez dans un champ, les autres se mettent à jour.",
+        "اكتب في أي خانة وستتحدث الباقي مباشرة."
+    ),
+    "u_ft" to tr("Feet (ft)", "Pieds (ft)", "قدم (ft)"),
+    "u_km" to tr("Kilometers (km)", "Kilomètres (km)", "كيلومتر (km)"),
+    "u_kt" to tr("Knots (kt)", "Nœuds (kt)", "عقدة (kt)"),
+    "u_kmh" to tr("Kilometers/hour (km/h)", "Kilomètres/heure (km/h)", "كيلومتر/ساعة (km/h)"),
+    "u_c" to tr("Celsius (°C)", "Celsius (°C)", "سيلسيوس (°C)"),
+    "u_f" to tr("Fahrenheit (°F)", "Fahrenheit (°F)", "فهرنهايت (°F)"),
+    "u_k" to tr("Kelvin (K)", "Kelvin (K)", "كلفن (K)")
 )
 
 @Composable
@@ -246,11 +268,18 @@ fun SkyMetarApp(initialLang: Lang = Lang.EN, onLangChange: (Lang) -> Unit = {}) 
                         selected = selectedTab == "CLOUDS",
                         modifier = Modifier.weight(1f)
                     ) { selectedTab = "CLOUDS" }
+
+                    TabButton(
+                        text = "🧮 " + t("tab_calc"),
+                        selected = selectedTab == "CALC",
+                        modifier = Modifier.weight(1f)
+                    ) { selectedTab = "CALC" }
                 }
 
                 when (selectedTab) {
                     "METAR" -> MetarTafScreen(Modifier.weight(1f))
                     "CLOUDS" -> CloudsScreen(Modifier.weight(1f))
+                    "CALC" -> CalculatorScreen(Modifier.weight(1f))
                 }
             }
         }
@@ -341,12 +370,13 @@ fun TabButton(
         onClick = onClick,
         modifier = modifier.height(48.dp),
         shape = RoundedCornerShape(12.dp),
+        contentPadding = PaddingValues(horizontal = 4.dp),
         colors = ButtonDefaults.buttonColors(
             containerColor = if (selected) Accent else Panel,
             contentColor = if (selected) Background else White
         )
     ) {
-        Text(text, fontWeight = FontWeight.Bold)
+        Text(text, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
     }
 }
 
@@ -828,6 +858,413 @@ fun ForecastCard(h: HourForecast) {
         }
     }
 }
+
+// ================================================================ CALCULATOR & CONVERTERS TAB
+
+// ---------------------------------------------------------------- helpers
+/** Rounds to 8 decimals and strips trailing zeros. Returns null for NaN / Infinity. */
+private fun calcFmt(d: Double): String? {
+    if (!d.isFinite()) return null
+    val s = BigDecimal(d).setScale(8, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
+    return if (s == "-0") "0" else s
+}
+
+private fun calcSanitize(raw: String, allowNegative: Boolean): String {
+    val sb = StringBuilder()
+    var dot = false
+    for (ch in raw.replace(',', '.')) {
+        when {
+            ch in '0'..'9' -> sb.append(ch)
+            ch == '.' && !dot -> {
+                dot = true
+                sb.append(ch)
+            }
+            ch == '-' && allowNegative && sb.isEmpty() -> sb.append(ch)
+        }
+    }
+    return sb.toString()
+}
+
+// ---------------------------------------------------------------- expression parser (+ − × ÷ %)
+private class CalcExprParser(private val s: String) {
+    private var p = 0
+
+    fun parse(): Double {
+        val v = expr()
+        if (p != s.length) throw IllegalArgumentException()
+        return v
+    }
+
+    private fun peek(): Char? = if (p < s.length) s[p] else null
+
+    private fun expr(): Double {
+        var v = term()
+        while (true) {
+            when (peek()) {
+                '+' -> { p++; v += term() }
+                '-', '−' -> { p++; v -= term() }
+                else -> return v
+            }
+        }
+    }
+
+    private fun term(): Double {
+        var v = factor()
+        while (true) {
+            when (peek()) {
+                '×' -> { p++; v *= factor() }
+                '÷' -> {
+                    p++
+                    val d = factor()
+                    if (d == 0.0) throw ArithmeticException()
+                    v /= d
+                }
+                else -> return v
+            }
+        }
+    }
+
+    private fun factor(): Double {
+        if (peek() == '-' || peek() == '−') {
+            p++
+            return -factor()
+        }
+        val start = p
+        while (peek()?.let { it in '0'..'9' || it == '.' } == true) p++
+        if (start == p) throw IllegalArgumentException()
+        var v = s.substring(start, p).toDouble()
+        while (peek() == '%') {
+            p++
+            v /= 100.0
+        }
+        return v
+    }
+}
+
+private fun calcEval(s: String): Double? {
+    if (s.isBlank()) return null
+    return try {
+        CalcExprParser(s).parse().takeIf { it.isFinite() }
+    } catch (e: Exception) {
+        null
+    }
+}
+
+// ---------------------------------------------------------------- units
+private class CalcUnit(
+    val key: String,
+    val toBase: (Double) -> Double,
+    val fromBase: (Double) -> Double
+)
+
+// base = km
+private val distUnits = listOf(
+    CalcUnit("u_ft", { it * 0.0003048 }, { it / 0.0003048 }),
+    CalcUnit("u_km", { it }, { it })
+)
+
+// base = km/h
+private val speedUnits = listOf(
+    CalcUnit("u_kt", { it * 1.852 }, { it / 1.852 }),
+    CalcUnit("u_kmh", { it }, { it })
+)
+
+// base = °C
+private val tempUnits = listOf(
+    CalcUnit("u_c", { it }, { it }),
+    CalcUnit("u_f", { (it - 32.0) * 5.0 / 9.0 }, { it * 9.0 / 5.0 + 32.0 }),
+    CalcUnit("u_k", { it - 273.15 }, { it + 273.15 })
+)
+
+private enum class CalcMode { DIST, SPEED, TEMP, CALC }
+
+private val cKey = Color(0xFF1E3552)
+private val cError = Color(0xFFF44336)
+
+// ---------------------------------------------------------------- screen
+@Composable
+fun CalculatorScreen(modifier: Modifier = Modifier) {
+    var mode by remember { mutableStateOf(CalcMode.DIST) }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            "🧮 " + t("calc_title"),
+            color = Accent,
+            fontWeight = FontWeight.Bold,
+            fontSize = 19.sp
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            CalcMode.values().forEach { m ->
+                val label = when (m) {
+                    CalcMode.DIST -> "ft ↔ km"
+                    CalcMode.SPEED -> "kt ↔ km/h"
+                    CalcMode.TEMP -> "°C ↔ °F"
+                    CalcMode.CALC -> "🧮 " + t("mode_calc")
+                }
+                ModeChip(label, mode == m) { mode = m }
+            }
+        }
+
+        when (mode) {
+            CalcMode.DIST -> ConverterPanel(distUnits, "1 ft = 0.0003048 km   ·   1 km ≈ 3280.84 ft")
+            CalcMode.SPEED -> ConverterPanel(speedUnits, "1 kt = 1.852 km/h")
+            CalcMode.TEMP -> ConverterPanel(
+                tempUnits,
+                "°F = °C × 9/5 + 32   ·   K = °C + 273.15",
+                allowNegative = true
+            )
+            // keypad must never be mirrored in Arabic
+            CalcMode.CALC -> CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                BasicCalculator()
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModeChip(text: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (selected) Accent else Panel)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text,
+            color = if (selected) Background else White,
+            fontWeight = FontWeight.Bold,
+            fontSize = 14.sp,
+            maxLines = 1,
+            style = LocalTextStyle.current.copy(textDirection = TextDirection.Ltr)
+        )
+    }
+}
+
+// ---------------------------------------------------------------- converters
+@Composable
+private fun ConverterPanel(units: List<CalcUnit>, note: String, allowNegative: Boolean = false) {
+    val texts = remember(units) {
+        mutableStateListOf<String>().apply { repeat(units.size) { add("") } }
+    }
+
+    fun edit(i: Int, raw: String) {
+        texts[i] = calcSanitize(raw, allowNegative)
+        val v = texts[i].toDoubleOrNull()
+        for (j in units.indices) {
+            if (j == i) continue
+            texts[j] = if (v == null) "" else (calcFmt(units[j].fromBase(units[i].toBase(v))) ?: "")
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(t("conv_hint"), color = Muted, fontSize = 13.sp)
+
+        units.forEachIndexed { i, u ->
+            val trailing: (@Composable () -> Unit)? = if (allowNegative) {
+                @Composable {
+                    TextButton(onClick = {
+                        val cur = texts[i]
+                        edit(i, if (cur.startsWith("-")) cur.drop(1) else "-$cur")
+                    }) {
+                        Text("±", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            } else null
+
+            OutlinedTextField(
+                value = texts[i],
+                onValueChange = { edit(i, it) },
+                label = { Text(t(u.key)) },
+                textStyle = LocalTextStyle.current.copy(
+                    textDirection = TextDirection.Ltr,
+                    fontSize = 20.sp
+                ),
+                trailingIcon = trailing,
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        Text(note, color = Muted, fontSize = 12.sp)
+    }
+}
+
+// ---------------------------------------------------------------- basic calculator
+@Composable
+private fun BasicCalculator() {
+    var expr by remember { mutableStateOf("") }
+    var justEvaluated by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf(false) }
+    val ops = "+−×÷"
+
+    fun press(key: String) {
+        error = false
+        val seg = expr.takeLastWhile { it in '0'..'9' || it == '.' }
+
+        when {
+            key == "C" -> {
+                expr = ""
+                justEvaluated = false
+            }
+            key == "⌫" -> {
+                expr = if (justEvaluated) "" else expr.dropLast(1)
+                justEvaluated = false
+            }
+            key == "=" -> {
+                val clean = expr.trimEnd('+', '−', '×', '÷')
+                val r = calcEval(clean)?.let { calcFmt(it) }
+                if (r != null) {
+                    expr = r.replace('-', '−')
+                    justEvaluated = true
+                } else if (expr.isNotEmpty()) {
+                    error = true
+                }
+            }
+            key == "%" -> {
+                val l = expr.lastOrNull()
+                if (l != null && (l in '0'..'9' || l == '%')) {
+                    expr += "%"
+                    justEvaluated = false
+                }
+            }
+            key == "." -> {
+                if (justEvaluated) {
+                    expr = "0."
+                    justEvaluated = false
+                } else if (expr.lastOrNull() != '%' && '.' !in seg) {
+                    expr += if (seg.isEmpty()) "0." else "."
+                }
+            }
+            key.length == 1 && key[0] in ops -> {
+                justEvaluated = false
+                val last = expr.lastOrNull()
+                when {
+                    expr.isEmpty() -> if (key == "−") expr = "−"
+                    expr == "−" -> {}
+                    last != null && last in ops -> expr = expr.dropLast(1) + key
+                    else -> expr += key
+                }
+            }
+            key.length == 1 && key[0] in '0'..'9' -> {
+                if (justEvaluated) {
+                    expr = key
+                    justEvaluated = false
+                } else if (expr.lastOrNull() == '%') {
+                    // ignore: "5%3" is not valid
+                } else if (seg == "0") {
+                    expr = expr.dropLast(1) + key
+                } else {
+                    expr += key
+                }
+            }
+        }
+    }
+
+    val preview = if (justEvaluated) null
+    else calcEval(expr.trimEnd('+', '−', '×', '÷'))?.let { calcFmt(it) }?.takeIf { it != expr }
+
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // display
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(Panel)
+                .padding(16.dp),
+            horizontalAlignment = Alignment.End
+        ) {
+            Text(
+                text = when {
+                    error -> t("calc_error")
+                    expr.isEmpty() -> "0"
+                    else -> expr
+                },
+                color = if (error) cError else White,
+                fontSize = if (expr.length > 12) 26.sp else 38.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.End,
+                maxLines = 2,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                text = preview?.replace('-', '−') ?: " ",
+                color = Muted,
+                fontSize = 18.sp,
+                textAlign = TextAlign.End,
+                maxLines = 1,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        // keypad
+        val rows = listOf(
+            listOf("C", "⌫", "%", "÷"),
+            listOf("7", "8", "9", "×"),
+            listOf("4", "5", "6", "−"),
+            listOf("1", "2", "3", "+")
+        )
+        rows.forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                row.forEach { k ->
+                    val isOp = k in listOf("÷", "×", "−", "+")
+                    val isFn = k in listOf("C", "⌫", "%")
+                    CalcKey(
+                        label = k,
+                        modifier = Modifier.weight(1f),
+                        bg = when {
+                            isOp -> Accent
+                            isFn -> cKey
+                            else -> Panel
+                        },
+                        fg = if (isOp) Background else White
+                    ) { press(k) }
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            CalcKey("0", Modifier.weight(2f), Panel, White) { press("0") }
+            CalcKey(".", Modifier.weight(1f), Panel, White) { press(".") }
+            CalcKey("=", Modifier.weight(1f), Accent, Background) { press("=") }
+        }
+    }
+}
+
+@Composable
+private fun CalcKey(
+    label: String,
+    modifier: Modifier,
+    bg: Color,
+    fg: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .height(58.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(bg)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(label, color = fg, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+// ================================================================ NETWORK / PARSING
 
 private fun download(url: URL): String {
     val connection = url.openConnection() as HttpURLConnection
