@@ -1,4 +1,4 @@
- package com.skymetarglobal.app
+package com.skymetarglobal.app
 
 import android.os.Bundle
 import android.os.Handler
@@ -712,6 +712,18 @@ fun CategoryCard(result: MetarResult) {
     val visText = result.visibility?.let { String.format(Locale.US, "%.1f", it) + " " + t("km") }
         ?: t("unknown")
     val ceilText = result.ceiling?.let { "$it ${t("ft")}" } ?: t("none")
+    // School chip label exactly as printed on the poster table
+    val catLabel = when (result.category) {
+        "BLUE" -> "BLEU"
+        "GREEN" -> "VERT"
+        "GREEN / YELLOW" -> "JAUNE-VERT"
+        "YELLOW" -> "JAUNE"
+        "YELLOW / RED" -> "JAUNE-ROUGE"
+        "RED" -> "ROUGE"
+        "SPECIAL" -> "SPÉC"
+        "GREY" -> "—"
+        else -> result.category
+    }
 
     ProCard(borderColor = result.color.copy(alpha = 0.7f)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -722,7 +734,7 @@ fun CategoryCard(result: MetarResult) {
                     .padding(horizontal = 12.dp, vertical = 6.dp)
             ) {
                 Text(
-                    result.category,
+                    catLabel,
                     color = Color.Black,
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp
@@ -1828,12 +1840,20 @@ fun parseMetar(raw: String): MetarResult {
 
     // null = no ceiling (clear / few / scattered / CAVOK)
     val ceiling = cloudHeights.minOrNull()
-    val effectiveCeiling = ceiling ?: Int.MAX_VALUE
+
+    // "VV" without a height (VV/// or bare VV) = sky obscured with an
+    // indefinite ceiling: treated as the worst case (cover 8/8, ceiling 0 ft).
+    val obscuredUnknown = Regex("""\bVV(?!\d)""").containsMatchIn(text)
+    val effectiveCeiling: Int = when {
+        obscuredUnknown -> 0
+        else -> ceiling ?: Int.MAX_VALUE
+    }
 
     // Total cloud cover in oktas, worst case (FEW=2, SCT=4, BKN=5, OVC/VV=8).
     // METAR FEW/SCT do not give the exact oktas (1-2 / 3-4), so the higher
     // value is assumed; cover >= 4/8 blocks BLUE/GREEN like the table demands.
     val coverOktas: Int = when {
+        obscuredUnknown -> 8
         Regex("""\b(?:VV|OVC)\d{3}""").containsMatchIn(text) -> 8
         Regex("""\bBKN\d{3}""").containsMatchIn(text) -> 5
         Regex("""\bSCT\d{3}""").containsMatchIn(text) -> 4
