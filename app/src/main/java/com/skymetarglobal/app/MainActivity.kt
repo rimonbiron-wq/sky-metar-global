@@ -30,16 +30,101 @@ import java.util.Locale
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            SkyMetarApp()
-        }
+        setContent { SkyMetarApp() }
     }
 }
 
 data class CloudAnalysis(
     val layers: String,
-    val ceiling: String
+    val ceilingFeet: Int?,
+    val ceilingText: String
 )
+
+data class FlightColor(
+    val name: String,
+    val color: Color,
+    val minVisibility: Double,
+    val minCeiling: Int
+)
+
+val flightColors = listOf(
+    FlightColor("BLUE", Color(0xFF168BFF), 8.0, 2500),
+    FlightColor("GREEN", Color(0xFF19A65A), 5.0, 1500),
+    FlightColor("GREEN / YELLOW", Color(0xFF9ACD32), 5.0, 1000),
+    FlightColor("YELLOW", Color(0xFFFFD21F), 3.0, 500),
+    FlightColor("YELLOW / RED", Color(0xFFFF9B21), 1.5, 350),
+    FlightColor("RED", Color(0xFFE53935), 1.0, 220),
+    FlightColor("GREY", Color(0xFF777777), 0.0, 0)
+)
+
+fun classifyConditions(
+    visibilityKm: Double?,
+    ceilingFeet: Int?
+): FlightColor? {
+
+    if (visibilityKm == null) return null
+
+    val ceiling = ceilingFeet ?: Int.MAX_VALUE
+
+    return flightColors.firstOrNull {
+        visibilityKm >= it.minVisibility &&
+        ceiling >= it.minCeiling
+    } ?: flightColors.last()
+}
+
+fun parseVisibilityKm(raw: String): Double? {
+
+    val metric = Regex(
+        """(?<![A-Z0-9])(\d{4})(?![A-Z0-9])"""
+    ).find(raw)
+
+    if (metric != null) {
+        val value = metric.groupValues[1].toInt()
+
+        return when {
+            value == 9999 -> 10.0
+            else -> value / 1000.0
+        }
+    }
+
+    val smToken = raw.split(Regex("\\s+"))
+        .firstOrNull { it.endsWith("SM") }
+        ?: return null
+
+    var valueText = smToken.removeSuffix("SM")
+    var multiplier = 1.0
+
+    if (valueText.startsWith("P")) {
+        valueText = valueText.drop(1)
+    } else if (valueText.startsWith("M")) {
+        valueText = valueText.drop(1)
+    }
+
+    fun fractionValue(text: String): Double? {
+        val parts = text.split("/")
+        if (parts.size != 2) return null
+
+        val numerator = parts[0].toDoubleOrNull() ?: return null
+        val denominator = parts[1].toDoubleOrNull() ?: return null
+
+        if (denominator == 0.0) return null
+
+        return numerator / denominator
+    }
+
+    val miles = if (valueText.contains(" ")) {
+        val parts = valueText.split(" ", limit = 2)
+        val whole = parts[0].toDoubleOrNull() ?: return null
+        val fraction = fractionValue(parts[1]) ?: return null
+        whole + fraction
+    } else if (valueText.contains("/")) {
+        fractionValue(valueText) ?: return null
+    } else {
+        valueText.toDoubleOrNull() ?: return null
+    }
+
+    return miles * 1.60934 * multiplier
+}
 
 fun analyzeClouds(raw: String): CloudAnalysis {
 
@@ -47,26 +132,15 @@ fun analyzeClouds(raw: String): CloudAnalysis {
         """(?<![A-Z0-9])(?:FEW|SCT|BKN|OVC)\d{3}(?:CB|TCU)?|(?<![A-Z0-9])VV(?:\d{3}|///)"""
     )
 
-    val matches = regex.findAll(raw).map {
-        it.value
-    }.toList()
+    val matches = regex.findAll(raw)
+        .map { it.value }
+        .toList()
 
     if (matches.isEmpty()) {
-        val message = if (
-            raw.contains("CAVOK") ||
-            raw.contains("SKC") ||
-            raw.contains("CLR") ||
-            raw.contains("NSC") ||
-            raw.contains("NCD")
-        ) {
-            "No significant cloud reported"
-        } else {
-            "No cloud layers reported"
-        }
-
         return CloudAnalysis(
-            layers = message,
-            ceiling = "No ceiling reported"
+            layers = "No cloud layers reported",
+            ceilingFeet = null,
+            ceilingText = "No ceiling reported"
         )
     }
 
@@ -80,7 +154,7 @@ fun analyzeClouds(raw: String): CloudAnalysis {
             token.substring(3, 6)
         }
 
-        val heightFeet = heightText.toIntOrNull()?.times(100)
+        val height = heightText.toIntOrNull()?.times(100)
 
         val oktas = when (cover) {
             "FEW" -> "1–2 OKTAS"
@@ -91,22 +165,15 @@ fun analyzeClouds(raw: String): CloudAnalysis {
             else -> ""
         }
 
-        val altitude = heightFeet?.let {
-            "$it ft"
-        } ?: "Height unavailable"
-
-        "$cover — $oktas — $altitude"
+        "$cover — $oktas — ${height?.let { "$it ft" } ?: "Unknown height"}"
     }
 
     val ceilingHeights = matches.mapNotNull { token ->
 
         val cover = token.take(3)
 
-        if (
-            cover == "BKN" ||
-            cover == "OVC" ||
-            cover == "VV"
-        ) {
+        if (cover == "BKN" || cover == "OVC" || cover == "VV") {
+
             val heightText = if (cover == "VV") {
                 token.substring(2, 5)
             } else {
@@ -119,13 +186,13 @@ fun analyzeClouds(raw: String): CloudAnalysis {
         }
     }
 
-    val ceiling = ceilingHeights.minOrNull()?.let {
-        "$it ft"
-    } ?: "No ceiling reported"
+    val ceiling = ceilingHeights.minOrNull()
 
     return CloudAnalysis(
         layers = descriptions.joinToString("\n"),
-        ceiling = ceiling
+        ceilingFeet = ceiling,
+        ceilingText = ceiling?.let { "$it ft" }
+            ?: "No ceiling reported"
     )
 }
 
@@ -136,80 +203,33 @@ fun SkyMetarApp() {
         Handler(Looper.getMainLooper())
     }
 
-    var station by remember {
-        mutableStateOf("GMMN")
-    }
+    var station by remember { mutableStateOf("GMMN") }
+    var loading by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf("Enter ICAO code") }
 
-    var language by remember {
-        mutableStateOf("English")
-    }
+    var airport by remember { mutableStateOf("") }
+    var report by remember { mutableStateOf("") }
+    var observation by remember { mutableStateOf("") }
 
-    var loading by remember {
-        mutableStateOf(false)
-    }
+    var temperature by remember { mutableStateOf("—") }
+    var dewpoint by remember { mutableStateOf("—") }
+    var wind by remember { mutableStateOf("—") }
 
-    var status by remember {
-        mutableStateOf("Enter an ICAO airport code")
-    }
+    var visibility by remember { mutableStateOf("—") }
+    var visibilityKm by remember { mutableStateOf<Double?>(null) }
 
-    var airport by remember {
-        mutableStateOf("")
-    }
+    var cloudLayers by remember { mutableStateOf("—") }
+    var cloudCeiling by remember { mutableStateOf("—") }
+    var ceilingFeet by remember { mutableStateOf<Int?>(null) }
 
-    var report by remember {
-        mutableStateOf("")
-    }
-
-    var observation by remember {
-        mutableStateOf("")
-    }
-
-    var temperature by remember {
-        mutableStateOf("—")
-    }
-
-    var dewpoint by remember {
-        mutableStateOf("—")
-    }
-
-    var wind by remember {
-        mutableStateOf("—")
-    }
-
-    var visibility by remember {
-        mutableStateOf("—")
-    }
-
-    var cloudLayers by remember {
-        mutableStateOf("—")
-    }
-
-    var cloudCeiling by remember {
-        mutableStateOf("—")
-    }
+    var finalColor by remember { mutableStateOf<FlightColor?>(null) }
+    var visibilityColor by remember { mutableStateOf<FlightColor?>(null) }
+    var ceilingColor by remember { mutableStateOf<FlightColor?>(null) }
 
     val bg = Color(0xFF081522)
     val panel = Color(0xFF102638)
     val white = Color.White
     val muted = Color(0xFF9EB4C8)
-
-    val searchLabel = when (language) {
-        "العربية" -> "البحث عن مطار"
-        "Français" -> "Rechercher un aéroport"
-        else -> "AIRPORT SEARCH"
-    }
-
-    val buttonLabel = when (language) {
-        "العربية" -> "بحث عن METAR"
-        "Français" -> "RECHERCHER METAR"
-        else -> "SEARCH METAR"
-    }
-
-    val rawLabel = when (language) {
-        "العربية" -> "تقرير METAR الخام"
-        "Français" -> "METAR brut"
-        else -> "RAW METAR REPORT"
-    }
 
     fun searchMetar() {
 
@@ -221,17 +241,13 @@ fun SkyMetarApp() {
         }
 
         loading = true
-        status = "Connecting to aviation weather service..."
+        status = "Connecting..."
 
-        report = ""
         airport = ""
-        observation = ""
-        temperature = "—"
-        dewpoint = "—"
-        wind = "—"
-        visibility = "—"
-        cloudLayers = "—"
-        cloudCeiling = "—"
+        report = ""
+        finalColor = null
+        visibilityColor = null
+        ceilingColor = null
 
         Thread {
 
@@ -259,7 +275,7 @@ fun SkyMetarApp() {
                 if (responseCode == 204) {
 
                     mainHandler.post {
-                        status = "No recent METAR found for $code"
+                        status = "No METAR found for $code"
                         loading = false
                     }
 
@@ -274,7 +290,7 @@ fun SkyMetarApp() {
                     if (data.length() == 0) {
 
                         mainHandler.post {
-                            status = "No METAR available for $code"
+                            status = "No METAR available"
                             loading = false
                         }
 
@@ -283,15 +299,15 @@ fun SkyMetarApp() {
                         val item = data.getJSONObject(0)
 
                         val name = item.optString("name", code)
-
-                        val raw = item.optString(
-                            "rawOb",
-                            "No raw report"
-                        )
+                        val raw = item.optString("rawOb", "")
 
                         val temp = item.optString("temp", "—")
                         val dew = item.optString("dewp", "—")
-                        val vis = item.optString("visib", "—")
+
+                        val visKm = parseVisibilityKm(raw)
+                        val visText = visKm?.let {
+                            String.format(Locale.US, "%.1f km", it)
+                        } ?: "Unavailable"
 
                         val direction = item.optString("wdir", "—")
                         val speed = item.optString("wspd", "—")
@@ -299,10 +315,7 @@ fun SkyMetarApp() {
 
                         val windText =
                             "$direction° / $speed kt" +
-                            if (
-                                gust.isNotEmpty() &&
-                                gust != "null"
-                            ) {
+                            if (gust.isNotEmpty() && gust != "null") {
                                 " (gust $gust kt)"
                             } else {
                                 ""
@@ -311,17 +324,34 @@ fun SkyMetarApp() {
                         val time = item.optLong("obsTime", 0L)
 
                         val timeText = if (time > 0L) {
-
                             SimpleDateFormat(
                                 "yyyy-MM-dd HH:mm 'UTC'",
                                 Locale.US
                             ).format(Date(time * 1000L))
-
                         } else {
                             "Time unavailable"
                         }
 
-                        val cloudAnalysis = analyzeClouds(raw)
+                        val clouds = analyzeClouds(raw)
+
+                        val visClass = classifyConditions(
+                            visKm,
+                            null
+                        )
+
+                        val ceilClass = if (clouds.ceilingFeet != null) {
+                            classifyConditions(
+                                10.0,
+                                clouds.ceilingFeet
+                            )
+                        } else {
+                            null
+                        }
+
+                        val overall = classifyConditions(
+                            visKm,
+                            clouds.ceilingFeet
+                        )
 
                         mainHandler.post {
 
@@ -332,10 +362,17 @@ fun SkyMetarApp() {
                             temperature = "$temp °C"
                             dewpoint = "$dew °C"
                             wind = windText
-                            visibility = vis
 
-                            cloudLayers = cloudAnalysis.layers
-                            cloudCeiling = cloudAnalysis.ceiling
+                            visibility = visText
+                            visibilityKm = visKm
+
+                            cloudLayers = clouds.layers
+                            cloudCeiling = clouds.ceilingText
+                            ceilingFeet = clouds.ceilingFeet
+
+                            visibilityColor = visClass
+                            ceilingColor = ceilClass
+                            finalColor = overall
 
                             status = "METAR received successfully"
                             loading = false
@@ -353,9 +390,7 @@ fun SkyMetarApp() {
             } catch (e: Exception) {
 
                 mainHandler.post {
-                    status =
-                        "Connection error: ${e.message ?: "Unknown error"}"
-
+                    status = "Connection error: ${e.message}"
                     loading = false
                 }
 
@@ -364,6 +399,50 @@ fun SkyMetarApp() {
             }
 
         }.start()
+    }
+
+    @Composable
+    fun ColorResult(
+        heading: String,
+        result: FlightColor?
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(panel, RoundedCornerShape(12.dp))
+                .padding(14.dp)
+        ) {
+            Text(
+                heading,
+                color = muted,
+                fontSize = 12.sp
+            )
+
+            Spacer(Modifier.height(6.dp))
+
+            Row(
+                verticalAlignment =
+                    androidx.compose.ui.Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier
+                        .size(22.dp)
+                        .background(
+                            result?.color ?: Color.DarkGray,
+                            RoundedCornerShape(5.dp)
+                        )
+                )
+
+                Spacer(Modifier.width(10.dp))
+
+                Text(
+                    result?.name ?: "UNAVAILABLE",
+                    color = white,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp
+                )
+            }
+        }
     }
 
     MaterialTheme {
@@ -395,174 +474,91 @@ fun SkyMetarApp() {
                     fontSize = 12.sp
                 )
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-
-                    listOf(
-                        "العربية",
-                        "English",
-                        "Français"
-                    ).forEach { lang ->
-
-                        Button(
-                            onClick = {
-                                language = lang
-                            },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(4.dp)
-                        ) {
-
-                            Text(
-                                lang,
-                                fontSize = 11.sp
-                            )
-                        }
-                    }
-                }
-
-                Text(
-                    searchLabel,
-                    color = white,
-                    fontWeight = FontWeight.Bold
-                )
-
                 OutlinedTextField(
                     value = station,
-
                     onValueChange = {
                         station = it.uppercase(Locale.US)
-                            .filter { c ->
-                                c.isLetterOrDigit()
-                            }
+                            .filter { c -> c.isLetterOrDigit() }
                             .take(4)
                     },
-
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-
-                    label = {
-                        Text("ICAO CODE")
-                    },
-
-                    placeholder = {
-                        Text("Example: GMMN")
-                    },
-
+                    label = { Text("ICAO AIRPORT CODE") },
+                    placeholder = { Text("Example: GMMN") },
                     keyboardOptions = KeyboardOptions(
-                        capitalization =
-                            KeyboardCapitalization.Characters,
+                        capitalization = KeyboardCapitalization.Characters,
                         keyboardType = KeyboardType.Ascii
                     )
                 )
 
                 Button(
-                    onClick = {
-                        searchMetar()
-                    },
-
+                    onClick = { searchMetar() },
                     enabled = !loading,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-
                     Text(
-                        if (loading) {
-                            "LOADING..."
-                        } else {
-                            buttonLabel
-                        }
+                        if (loading) "LOADING..." else "SEARCH METAR"
                     )
                 }
 
-                Text(
-                    status,
-
-                    color = if (
-                        status.startsWith("Connection error") ||
-                        status.startsWith("Server error")
-                    ) {
-                        Color(0xFFFF7777)
-                    } else {
-                        muted
-                    },
-
-                    fontSize = 13.sp
-                )
+                Text(status, color = muted, fontSize = 13.sp)
 
                 if (airport.isNotEmpty()) {
 
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                panel,
-                                RoundedCornerShape(14.dp)
-                            )
-                            .padding(16.dp),
-
-                        verticalArrangement =
-                            Arrangement.spacedBy(12.dp)
-                    ) {
-
-                        Text(
-                            airport,
-                            color = white,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 17.sp
-                        )
-
-                        Text(
-                            "Observation: $observation",
-                            color = muted,
-                            fontSize = 12.sp
-                        )
-
-                        HorizontalDivider(color = muted)
-
-                        Text(
-                            "TEMPERATURE: $temperature",
-                            color = white
-                        )
-
-                        Text(
-                            "DEW POINT: $dewpoint",
-                            color = white
-                        )
-
-                        Text(
-                            "WIND: $wind",
-                            color = white
-                        )
-
-                        Text(
-                            "VISIBILITY: $visibility",
-                            color = white
-                        )
-
-                        HorizontalDivider(color = muted)
-
-                        Text(
-                            "CLOUD LAYERS",
-                            color = white,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        Text(
-                            cloudLayers,
-                            color = Color(0xFFB9D9F2),
-                            fontSize = 14.sp
-                        )
-
-                        Text(
-                            "CLOUD CEILING: $cloudCeiling",
-                            color = white,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+                    Text(
+                        airport,
+                        color = white,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold
+                    )
 
                     Text(
-                        rawLabel,
+                        "OBSERVATION: $observation",
+                        color = muted,
+                        fontSize = 12.sp
+                    )
+
+                    Text("TEMPERATURE: $temperature", color = white)
+                    Text("DEW POINT: $dewpoint", color = white)
+                    Text("WIND: $wind", color = white)
+                    Text("VISIBILITY: $visibility", color = white)
+
+                    ColorResult(
+                        "VISIBILITY CATEGORY",
+                        visibilityColor
+                    )
+
+                    HorizontalDivider(color = muted)
+
+                    Text(
+                        "CLOUD LAYERS",
+                        color = white,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Text(
+                        cloudLayers,
+                        color = Color(0xFFB9D9F2),
+                        fontSize = 14.sp
+                    )
+
+                    Text(
+                        "CLOUD CEILING: $cloudCeiling",
+                        color = white
+                    )
+
+                    ColorResult(
+                        "CLOUD CEILING CATEGORY",
+                        ceilingColor
+                    )
+
+                    ColorResult(
+                        "FINAL FLIGHT CATEGORY",
+                        finalColor
+                    )
+
+                    Text(
+                        "RAW METAR REPORT",
                         color = white,
                         fontWeight = FontWeight.Bold
                     )
@@ -570,8 +566,6 @@ fun SkyMetarApp() {
                     Text(
                         report,
                         color = Color(0xFFB9D9F2),
-                        fontSize = 14.sp,
-
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(
