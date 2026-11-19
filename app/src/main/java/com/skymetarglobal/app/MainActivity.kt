@@ -9,6 +9,7 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -17,6 +18,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -36,12 +38,16 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.json.JSONArray
+import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import kotlin.concurrent.thread
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
@@ -132,7 +138,22 @@ private val translations: Map<String, Map<Lang, String>> = mapOf(
     "now" to tr("NOW", "MAINT.", "الآن"),
     "clear_desc" to tr("Clear (SKC / NSC / CAVOK)", "Dégagé (SKC / NSC / CAVOK)", "سماء صافية (SKC / NSC / CAVOK)"),
     "no_cloud" to tr("No cloud data", "Aucune donnée de nuages", "لا توجد بيانات سحب"),
-    "cig" to tr("CIG", "PLAF.", "السقف")
+    "forecast_title" to tr("8-HOUR FORECAST", "PRÉVISION 8 HEURES", "توقعات 8 ساعات"),
+    "elevation" to tr("Elevation", "Altitude de l'aéroport", "ارتفاع المطار"),
+    "cloud_cover" to tr("Cloud cover", "Couverture", "الغطاء السحابي"),
+    "low" to tr("Low", "Bas", "منخفضة"),
+    "mid" to tr("Mid", "Moyen", "متوسطة"),
+    "high" to tr("High", "Haut", "عالية"),
+    "wind" to tr("Wind", "Vent", "الرياح"),
+    "humidity" to tr("Humidity", "Humidité", "الرطوبة"),
+    "kt" to tr("kt", "kt", "عقدة"),
+    "err_forecast" to tr("Forecast error:", "Erreur de prévision :", "خطأ في جلب التوقعات:"),
+    "no_forecast" to tr("No forecast data for this airport.", "Aucune donnée de prévision pour cet aéroport.", "لا توجد بيانات توقعات لهذا المطار."),
+    "forecast_note" to tr(
+        "Model forecast (Open-Meteo), UTC. QNH ≈ sea-level pressure; QFE computed from airport elevation (ISA). Not for flight planning.",
+        "Prévision issue d'un modèle (Open-Meteo), UTC. QNH ≈ pression au niveau de la mer ; QFE calculé à partir de l'altitude de l'aéroport (ISA). Ne pas utiliser pour la préparation du vol.",
+        "توقعات من نموذج رقمي (Open-Meteo) بتوقيت UTC. QNH ≈ الضغط عند مستوى البحر، وQFE محسوب من ارتفاع المطار (ISA). لا تعتمد عليها في تخطيط الرحلات."
+    )
 )
 
 @Composable
@@ -157,16 +178,27 @@ data class MetarResult(
     val color: Color
 )
 
-data class CloudLayer(
-    val amount: String,
-    val altitude: Int,
-    val type: String = ""
-)
-
 data class Airport(
     val name: String,
     val icao: String,
-    val city: String
+    val city: String,
+    val lat: Double,
+    val lon: Double,
+    val elevFt: Int
+)
+
+data class HourForecast(
+    val time: String,
+    val cloud: Double,
+    val low: Double,
+    val mid: Double,
+    val high: Double,
+    val windDir: Double?,
+    val windKt: Double?,
+    val gustKt: Double?,
+    val humidity: Double?,
+    val qnh: Double?,
+    val qfe: Double?
 )
 
 @Composable
@@ -483,11 +515,12 @@ fun CloudsScreen(modifier: Modifier = Modifier) {
     var appliedQuery by remember { mutableStateOf("") }
     var allAirports by remember { mutableStateOf(airportsCache ?: emptyList()) }
     var selectedAirport by remember { mutableStateOf<Airport?>(null) }
-    var taf by remember { mutableStateOf("") }
+    var forecast by remember { mutableStateOf(listOf<HourForecast>()) }
     var listLoading by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
-    var layers by remember { mutableStateOf(listOf<CloudLayer>()) }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
 
     // Load every ICAO code once, when the CLOUDS tab opens
     LaunchedEffect(Unit) {
@@ -513,6 +546,7 @@ fun CloudsScreen(modifier: Modifier = Modifier) {
     }
 
     LazyColumn(
+        state = listState,
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 14.dp),
@@ -552,7 +586,7 @@ fun CloudsScreen(modifier: Modifier = Modifier) {
                         .height(48.dp),
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Text("\uD83D\uDD0D " + t("btn_search"), fontWeight = FontWeight.Bold)
+                    Text("🔍 " + t("btn_search"), fontWeight = FontWeight.Bold)
                 }
 
                 if (appliedQuery.isNotEmpty() || query.isNotEmpty()) {
@@ -580,19 +614,27 @@ fun CloudsScreen(modifier: Modifier = Modifier) {
 
         selectedAirport?.let { airport ->
             item {
-                Text(
-                    "${t("selected")}: ${airport.name} (${airport.icao})",
-                    color = Accent,
-                    fontWeight = FontWeight.Bold
-                )
+                Column {
+                    Text(
+                        "${t("selected")}: ${airport.name} (${airport.icao})",
+                        color = Accent,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "${t("elevation")}: ${airport.elevFt} ${t("ft")}",
+                        color = Muted,
+                        fontSize = 12.sp
+                    )
+                }
             }
         }
 
-        if (taf.isNotBlank()) {
-            item { WeatherCard(t("live_taf"), taf) }
-            item { CloudProfile(taf, layers) }
-        } else if (selectedAirport != null && !loading) {
-            item { Text(t("no_taf"), color = Muted) }
+        if (forecast.isNotEmpty()) {
+            item {
+                Text(t("forecast_title"), color = Accent, fontWeight = FontWeight.Bold)
+            }
+            items(forecast) { ForecastCard(it) }
+            item { Text(t("forecast_note"), color = Muted, fontSize = 11.sp) }
         }
 
         item {
@@ -603,18 +645,18 @@ fun CloudsScreen(modifier: Modifier = Modifier) {
             )
         }
 
-        items(filtered) { airport ->
+        items(filtered, key = { it.icao }) { airport ->
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable {
                         selectedAirport = airport
-                        taf = ""
-                        layers = emptyList()
+                        forecast = emptyList()
+                        message = ""
                         loading = true
-                        fetchWeather(airport.icao) { _, result, error ->
-                            taf = result
-                            layers = parseCloudLayers(result)
+                        scope.launch { listState.animateScrollToItem(0) }
+                        fetchForecast(airport) { list, error ->
+                            forecast = list
                             message = error
                             loading = false
                         }
@@ -640,532 +682,148 @@ fun CloudsScreen(modifier: Modifier = Modifier) {
     }
 }
 
-enum class BarMode { SOLID, FADE_IN, FADE_OUT, TEMPO }
+fun cloudOktas(pct: Double): Int = (pct / 12.5).roundToInt().coerceIn(0, 8)
 
-data class CloudBar(
-    val layer: CloudLayer,
-    val startH: Float,
-    val endH: Float,
-    val mode: BarMode,
-    val tag: String = ""
-)
-
-data class TafGroup(
-    val kind: String,
-    val startH: Float,
-    val endH: Float,
-    val layers: List<CloudLayer>,
-    val clear: Boolean
-)
-
-data class TafTimeline(
-    val station: String,
-    val startDay: Int,
-    val startHour: Int,
-    val totalHours: Float,
-    val groups: List<TafGroup>,
-    val bars: List<CloudBar>,
-    val clearSpans: List<Pair<Float, Float>>
-)
-
-fun parseTafTimeline(raw: String): TafTimeline? {
-    val tokens = raw.uppercase(Locale.US).replace("=", " ")
-        .split(Regex("""\s+""")).filter { it.isNotBlank() }
-
-    val periodRegex = Regex("""^(\d{2})(\d{2})/(\d{2})(\d{2})$""")
-    val vIdx = tokens.indexOfFirst { periodRegex.matches(it) }
-    if (vIdx < 0) return null
-
-    val vm = periodRegex.matchEntire(tokens[vIdx])!!.groupValues
-    val startDay = vm[1].toInt()
-    val startHour = vm[2].toInt()
-
-    fun off(day: Int, hour: Int): Float =
-        (((day - startDay + 31) % 31) * 24 + hour - startHour).toFloat()
-
-    val total = off(vm[3].toInt(), vm[4].toInt())
-    if (total <= 0f) return null
-
-    val station = tokens.take(vIdx)
-        .firstOrNull { it.length == 4 && it.all { c -> c in 'A'..'Z' } } ?: ""
-
-    val cloudRegex = Regex("""^(FEW|SCT|BKN|OVC|VV)(\d{3})(CB|TCU)?$""")
-    val fmRegex = Regex("""^FM(\d{2})(\d{2})(\d{2})$""")
-    val clearWords = setOf("CAVOK", "SKC", "NSC", "CLR", "NCD")
-
-    val groups = ArrayList<TafGroup>()
-    var kind = "BASE"
-    var gs = 0f
-    var ge = total
-    var layers = ArrayList<CloudLayer>()
-    var clear = false
-
-    fun flush() {
-        groups.add(TafGroup(kind, gs, ge, layers.toList(), clear))
-    }
-
-    var i = vIdx + 1
-    while (i < tokens.size) {
-        val t = tokens[i]
-        val fm = fmRegex.matchEntire(t)
-        if (fm != null) {
-            flush()
-            kind = "FM"
-            gs = off(fm.groupValues[1].toInt(), fm.groupValues[2].toInt()) +
-                    fm.groupValues[3].toInt() / 60f
-            ge = total
-            layers = ArrayList()
-            clear = false
-        } else if (t == "BECMG" || t == "TEMPO" || t.startsWith("PROB")) {
-            var j = i
-            if (t.startsWith("PROB") && j + 1 < tokens.size && tokens[j + 1] == "TEMPO") j++
-            val pm = if (j + 1 < tokens.size) periodRegex.matchEntire(tokens[j + 1]) else null
-            if (pm != null) {
-                flush()
-                kind = t
-                gs = off(pm.groupValues[1].toInt(), pm.groupValues[2].toInt())
-                ge = off(pm.groupValues[3].toInt(), pm.groupValues[4].toInt())
-                layers = ArrayList()
-                clear = false
-                i = j + 1
-            }
-        } else {
-            val cm = cloudRegex.matchEntire(t)
-            if (cm != null) {
-                layers.add(
-                    CloudLayer(cm.groupValues[1], cm.groupValues[2].toInt() * 100, cm.groupValues[3])
-                )
-            } else if (t in clearWords) {
-                clear = true
-            }
-        }
-        i++
-    }
-    flush()
-
-    // ---- build the bars
-    val bars = ArrayList<CloudBar>()
-    val clearSpans = ArrayList<Pair<Float, Float>>()
-    val base = groups.first()
-    var curLayers: List<CloudLayer> = base.layers
-    var curClear = base.clear
-    var curStart = 0f
-
-    fun closeState(end: Float) {
-        if (end > curStart) {
-            curLayers.forEach { bars.add(CloudBar(it, curStart, end, BarMode.SOLID)) }
-            if (curLayers.isEmpty() && curClear) clearSpans.add(curStart to end)
-        }
-    }
-
-    val events = groups.drop(1)
-        .filter { (it.kind == "FM" || it.kind == "BECMG") && (it.layers.isNotEmpty() || it.clear) }
-        .sortedBy { it.startH }
-
-    for (e in events) {
-        if (e.kind == "FM") {
-            closeState(e.startH)
-            curLayers = e.layers
-            curClear = e.clear
-            curStart = maxOf(e.startH, curStart)
-        } else {
-            val start = maxOf(e.startH, curStart)
-            closeState(start)
-            val end = maxOf(e.endH, start)
-            curLayers.forEach { bars.add(CloudBar(it, start, end, BarMode.FADE_OUT)) }
-            e.layers.forEach { bars.add(CloudBar(it, start, end, BarMode.FADE_IN)) }
-            curLayers = e.layers
-            curClear = e.clear
-            curStart = end
-        }
-    }
-    closeState(total)
-
-    groups.filter { it.kind == "TEMPO" || it.kind.startsWith("PROB") }.forEach { g ->
-        g.layers.forEach { bars.add(CloudBar(it, g.startH, g.endH, BarMode.TEMPO, g.kind)) }
-    }
-
-    return TafTimeline(station, startDay, startHour, total, groups, bars, clearSpans)
+fun cloudCategory(oktas: Int): String = when {
+    oktas == 0 -> "SKC"
+    oktas <= 2 -> "FEW"
+    oktas <= 4 -> "SCT"
+    oktas <= 7 -> "BKN"
+    else -> "OVC"
 }
 
-fun layerLabel(l: CloudLayer): String =
-    String.format(Locale.US, "%s%03d%s", l.amount, l.altitude / 100, l.type)
-
-fun layerColor(l: CloudLayer): Color = when {
-    l.type.isNotEmpty() -> Color(0xFFFF7043)
-    l.amount == "VV" -> Color(0xFFFFB74D)
-    l.amount == "FEW" -> Color(0xFF6FB7DF)
-    l.amount == "SCT" -> Color(0xFF9CCDEB)
-    l.amount == "BKN" -> Color(0xFFCFE3F3)
+fun cloudCatColor(cat: String): Color = when (cat) {
+    "SKC" -> Color(0xFF42A5F5)
+    "FEW" -> Color(0xFF6FB7DF)
+    "SCT" -> Color(0xFF9CCDEB)
+    "BKN" -> Color(0xFFCFE3F3)
     else -> Color(0xFFF4F7FC)
 }
 
-fun layerThicknessDp(amount: String): Float = when (amount) {
-    "FEW" -> 8f
-    "SCT" -> 11f
-    "BKN" -> 15f
-    else -> 18f
-}
-
-fun ceilingOf(layers: List<CloudLayer>): Int? =
-    layers.filter { it.amount == "BKN" || it.amount == "OVC" || it.amount == "VV" }
-        .minOfOrNull { it.altitude }
-
-fun formatTafTime(tl: TafTimeline, h: Float): String {
-    val whole = h.toInt()
-    val mins = ((h - whole) * 60f).roundToInt()
-    val abs = tl.startHour + whole
-    val hour = abs % 24
-    val day = ((tl.startDay - 1 + abs / 24) % 31) + 1
-    return if (mins == 0) String.format(Locale.US, "%02d/%02dZ", day, hour)
-    else String.format(Locale.US, "%02d/%02d:%02dZ", day, hour, mins)
-}
-
 @Composable
-fun CloudProfile(taf: String, layers: List<CloudLayer>) {
-    val timeline = remember(taf) { parseTafTimeline(taf) }
-
-    if (timeline == null) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Panel, RoundedCornerShape(14.dp))
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Text(t("taf_unreadable"), color = Muted)
-            if (layers.isNotEmpty()) {
-                Text(
-                    layers.joinToString("   ") { layerLabel(it) },
-                    color = White,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-    } else {
-        CloudTimelineChart(timeline)
-    }
-}
-
-@Composable
-fun LegendItem(color: Color, text: String, dashed: Boolean = false) {
+fun PercentBar(label: String, pct: Double, color: Color) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(5.dp)
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        Text(label, color = Muted, fontSize = 11.sp, modifier = Modifier.width(72.dp))
         Box(
             modifier = Modifier
-                .size(12.dp)
-                .then(
-                    if (dashed) Modifier.border(1.5.dp, color, RoundedCornerShape(3.dp))
-                    else Modifier.background(color, RoundedCornerShape(3.dp))
-                )
-        )
-        Text(text, color = Muted, fontSize = 11.sp)
+                .weight(1f)
+                .height(8.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(Muted.copy(alpha = 0.2f))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth((pct / 100.0).toFloat().coerceIn(0f, 1f))
+                    .fillMaxHeight()
+                    .background(color)
+            )
+        }
+        Text("${pct.roundToInt()}%", color = White, fontSize = 11.sp, modifier = Modifier.width(40.dp))
     }
-}
-
-private fun DrawScope.labelPaint(sizeSp: Float, color: Color, bold: Boolean): android.graphics.Paint =
-    android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-        textSize = sizeSp.sp.toPx()
-        this.color = color.toArgb()
-        typeface = if (bold) android.graphics.Typeface.DEFAULT_BOLD
-        else android.graphics.Typeface.DEFAULT
-    }
-
-private fun DrawScope.labelWidth(text: String, sizeSp: Float, bold: Boolean = false): Float =
-    labelPaint(sizeSp, Color.Black, bold).measureText(text)
-
-private fun DrawScope.labelHeight(sizeSp: Float): Float {
-    val fm = labelPaint(sizeSp, Color.Black, false).fontMetrics
-    return fm.descent - fm.ascent
-}
-
-private fun DrawScope.drawLabel(
-    text: String,
-    left: Float,
-    top: Float,
-    color: Color,
-    sizeSp: Float,
-    bold: Boolean = false
-) {
-    val paint = labelPaint(sizeSp, color, bold)
-    drawContext.canvas.nativeCanvas.drawText(text, left, top - paint.fontMetrics.ascent, paint)
 }
 
 @Composable
-fun CloudTimelineChart(tl: TafTimeline) {
-    val clearText = t("clear")
-    val nowText = t("now")
-
-    val maxAlt = tl.bars.maxOfOrNull { it.layer.altitude } ?: 3000
-    val step = when {
-        maxAlt <= 3000 -> 500
-        maxAlt <= 8000 -> 1000
-        maxAlt <= 16000 -> 2000
-        else -> 5000
-    }
-    val topAlt = ((maxAlt / step) + 2) * step
-    val labelStep = when {
-        tl.totalHours <= 12f -> 2
-        tl.totalHours <= 36f -> 3
-        else -> 6
-    }
-
-    val nowH = remember(tl) {
-        val c = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
-        val day = c.get(Calendar.DAY_OF_MONTH)
-        ((day - tl.startDay + 31) % 31) * 24 +
-                c.get(Calendar.HOUR_OF_DAY) + c.get(Calendar.MINUTE) / 60f - tl.startHour
-    }
-
-    val fmStarts = tl.groups.filter { it.kind == "FM" }.map { it.startH }
-    val rows = tl.groups
-        .filter { it.kind == "BASE" || it.layers.isNotEmpty() || it.clear }
-        .map { g ->
-            val end = when (g.kind) {
-                "BASE", "FM" -> fmStarts.filter { it > g.startH }.minOrNull() ?: tl.totalHours
-                else -> g.endH
-            }
-            Triple(g, g.startH, end)
-        }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Panel, RoundedCornerShape(14.dp))
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+fun InfoCell(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    leading: (@Composable () -> Unit)? = null
+) {
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        leading?.invoke()
         Column {
-            Text(t("chart_title"), color = Accent, fontWeight = FontWeight.Bold)
-            Text(
-                "${tl.station}  ·  ${formatTafTime(tl, 0f)} → ${formatTafTime(tl, tl.totalHours)}",
-                color = White,
-                fontSize = 13.sp
-            )
-            Text(t("chart_axes"), color = Muted, fontSize = 11.sp)
+            Text(label, color = Muted, fontSize = 11.sp)
+            Text(value, color = White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
         }
+    }
+}
 
-        Canvas(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(300.dp)
+@Composable
+fun ForecastCard(h: HourForecast) {
+    val oktas = cloudOktas(h.cloud)
+    val cat = cloudCategory(oktas)
+    val dash = "--"
+
+    val windKt = h.windKt
+    val windText = if (windKt == null) dash else {
+        val d = h.windDir?.roundToInt()?.let { if (it % 360 == 0) 360 else it % 360 }
+        val dirTxt = if (d == null) "VRB" else String.format(Locale.US, "%03d°", d)
+        val gust = h.gustKt
+        val gTxt = if (gust != null && gust - windKt >= 5.0) " G${gust.roundToInt()}" else ""
+        "$dirTxt / ${windKt.roundToInt()} ${t("kt")}$gTxt"
+    }
+    val humText = h.humidity?.let { "${it.roundToInt()}%" } ?: dash
+    val qnhText = h.qnh?.let { String.format(Locale.US, "%.1f hPa", it) } ?: dash
+    val qfeText = h.qfe?.let { String.format(Locale.US, "%.1f hPa", it) } ?: dash
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Panel),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            val left = 46.dp.toPx()
-            val right = 6.dp.toPx()
-            val topPad = 8.dp.toPx()
-            val bottomPad = 22.dp.toPx()
-            val pw = size.width - left - right
-            val ph = size.height - topPad - bottomPad
-            val bottom = topPad + ph
-
-            fun xOf(h: Float): Float = left + (h.coerceIn(0f, tl.totalHours) / tl.totalHours) * pw
-            fun yOf(alt: Int): Float = bottom - (alt.toFloat() / topAlt) * ph
-
-            val gridColor = Muted.copy(alpha = 0.18f)
-
-            // horizontal grid + altitude labels
-            var alt = 0
-            while (alt <= topAlt) {
-                val y = yOf(alt)
-                drawLine(gridColor, Offset(left, y), Offset(left + pw, y), strokeWidth = 1f)
-                val text = alt.toString()
-                val w = labelWidth(text, 9f)
-                val h = labelHeight(9f)
-                drawLabel(text, left - w - 6.dp.toPx(), y - h / 2f, Muted, 9f)
-                alt += step
-            }
-
-            // vertical grid + time labels
-            var k = 0
-            while (k <= tl.totalHours.toInt()) {
-                val x = xOf(k.toFloat())
-                drawLine(gridColor, Offset(x, topPad), Offset(x, bottom), strokeWidth = 1f)
-                val abs = tl.startHour + k
-                val hr = abs % 24
-                val midnight = hr == 0
-                val text = if (midnight)
-                    String.format(Locale.US, "%02d/00", ((tl.startDay - 1 + abs / 24) % 31) + 1)
-                else String.format(Locale.US, "%02d", hr)
-                val w = labelWidth(text, 9f, midnight)
-                drawLabel(
-                    text,
-                    (x - w / 2f).coerceIn(0f, size.width - w),
-                    bottom + 5.dp.toPx(),
-                    if (midnight) Accent else Muted,
-                    9f,
-                    midnight
-                )
-                k += labelStep
-            }
-
-            // clear / CAVOK spans
-            tl.clearSpans.forEach { (s0, e0) ->
-                val x0 = xOf(s0)
-                val x1 = xOf(e0)
-                val w = labelWidth(clearText, 11f, true)
-                val h = labelHeight(11f)
-                if (x1 - x0 > w + 8.dp.toPx()) {
-                    drawLabel(
-                        clearText,
-                        (x0 + x1) / 2f - w / 2f,
-                        yOf(topAlt / 2) - h / 2f,
-                        Accent.copy(alpha = 0.55f),
-                        11f,
-                        true
-                    )
-                }
-            }
-
-            // cloud bars (TEMPO / PROB on top)
-            tl.bars.sortedBy { if (it.mode == BarMode.TEMPO) 1 else 0 }.forEach { b ->
-                val x0 = xOf(b.startH)
-                val x1 = xOf(b.endH)
-                if (x1 - x0 < 2f) return@forEach
-
-                val thick = layerThicknessDp(b.layer.amount).dp.toPx()
-                val yTop = yOf(b.layer.altitude) - thick
-                val color = layerColor(b.layer)
-                val pos = Offset(x0, yTop)
-                val sz = Size(x1 - x0, thick)
-                val corner = CornerRadius(4.dp.toPx())
-
-                when (b.mode) {
-                    BarMode.SOLID -> drawRoundRect(color.copy(alpha = 0.92f), pos, sz, corner)
-                    BarMode.FADE_IN -> drawRoundRect(
-                        Brush.horizontalGradient(
-                            listOf(color.copy(alpha = 0f), color.copy(alpha = 0.92f)),
-                            startX = x0, endX = x1
-                        ), pos, sz, corner
-                    )
-                    BarMode.FADE_OUT -> drawRoundRect(
-                        Brush.horizontalGradient(
-                            listOf(color.copy(alpha = 0.92f), color.copy(alpha = 0f)),
-                            startX = x0, endX = x1
-                        ), pos, sz, corner
-                    )
-                    BarMode.TEMPO -> {
-                        drawRoundRect(color.copy(alpha = 0.22f), pos, sz, corner)
-                        drawRoundRect(
-                            color, pos, sz, corner,
-                            style = Stroke(
-                                width = 1.5.dp.toPx(),
-                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f))
-                            )
-                        )
-                    }
-                }
-
-                // CB / TCU tower
-                if (b.layer.type.isNotEmpty() && b.mode != BarMode.TEMPO) {
-                    val towerH = 30.dp.toPx()
-                    val inset = (x1 - x0) * 0.2f
-                    val path = Path().apply {
-                        moveTo(x0, yTop)
-                        lineTo(x1, yTop)
-                        lineTo(x1 - inset, yTop - towerH)
-                        lineTo(x0 + inset, yTop - towerH)
-                        close()
-                    }
-                    drawPath(path, color.copy(alpha = 0.35f))
-                }
-
-                // label
-                if (b.mode == BarMode.SOLID || b.mode == BarMode.TEMPO) {
-                    val prefix = when {
-                        b.tag == "TEMPO" -> "T "
-                        b.tag.startsWith("PROB") -> b.tag.replace("PROB", "P") + " "
-                        else -> ""
-                    }
-                    val inside = b.mode == BarMode.SOLID && thick >= 14.dp.toPx()
-                    val text = prefix + layerLabel(b.layer)
-                    val w = labelWidth(text, 9f, true)
-                    val h = labelHeight(9f)
-                    val labelColor = when {
-                        inside -> Background
-                        b.mode == BarMode.TEMPO -> color
-                        else -> White
-                    }
-                    if (x1 - x0 >= w * 0.6f && w < size.width) {
-                        val tx = ((x0 + x1) / 2f - w / 2f).coerceIn(0f, size.width - w)
-                        val ty = if (inside) yTop + (thick - h) / 2f else yTop - h - 1.dp.toPx()
-                        drawLabel(text, tx, ty, labelColor, 9f, true)
-                    }
-                }
-            }
-
-            // NOW marker
-            if (nowH in 0f..tl.totalHours) {
-                val x = xOf(nowH)
-                drawLine(
-                    Color(0xFFFF5252), Offset(x, topPad), Offset(x, bottom),
-                    strokeWidth = 2f,
-                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f))
-                )
-                val w = labelWidth(nowText, 9f, true)
-                drawLabel(
-                    nowText,
-                    (x + 3.dp.toPx()).coerceAtMost(size.width - w),
-                    topPad,
-                    Color(0xFFFF5252),
-                    9f,
-                    true
-                )
-            }
-        }
-
-        // legend
-        Row(
-            modifier = Modifier.horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            LegendItem(Color(0xFF6FB7DF), "FEW")
-            LegendItem(Color(0xFF9CCDEB), "SCT")
-            LegendItem(Color(0xFFCFE3F3), "BKN")
-            LegendItem(Color(0xFFF4F7FC), "OVC")
-            LegendItem(Color(0xFFFF7043), "CB/TCU")
-            LegendItem(Color(0xFFFFB74D), "VV")
-            LegendItem(Color(0xFFFF7043), "TEMPO / PROB", dashed = true)
-        }
-
-        HorizontalDivider(color = Muted.copy(alpha = 0.3f))
-
-        // forecast periods
-        rows.forEach { (g, start, end) ->
-            val kindColor = when {
-                g.kind == "BASE" -> Accent
-                g.kind == "FM" -> White
-                g.kind == "BECMG" -> Color(0xFFFFB74D)
-                else -> Color(0xFFFF7043)
-            }
-            val cloudless = if (g.clear) t("clear_desc") else t("no_cloud")
-            val cigWord = t("cig")
-            val ftWord = t("ft")
-            val desc = if (g.layers.isEmpty()) {
-                cloudless
-            } else {
-                val cig = ceilingOf(g.layers)
-                g.layers.joinToString("  ") { layerLabel(it) } +
-                        (if (cig != null) "   ·  $cigWord $cig $ftWord" else "")
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    g.kind,
-                    color = kindColor,
+                    h.time,
+                    color = White,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 11.sp,
-                    modifier = Modifier.width(64.dp)
+                    fontSize = 18.sp,
+                    modifier = Modifier.weight(1f)
                 )
-                Column {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(cloudCatColor(cat))
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                ) {
                     Text(
-                        "${formatTafTime(tl, start)} → ${formatTafTime(tl, end)}",
-                        color = Muted,
-                        fontSize = 11.sp
+                        "$cat $oktas/8",
+                        color = Color.Black,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp
                     )
-                    Text(desc, color = White, fontSize = 13.sp)
                 }
+            }
+
+            PercentBar(t("cloud_cover"), h.cloud, cloudCatColor(cat))
+            PercentBar(t("low"), h.low, Color(0xFF6FB7DF))
+            PercentBar(t("mid"), h.mid, Color(0xFF9CCDEB))
+            PercentBar(t("high"), h.high, Color(0xFFCFE3F3))
+
+            HorizontalDivider(color = Muted.copy(alpha = 0.3f))
+
+            Row(modifier = Modifier.fillMaxWidth()) {
+                InfoCell(t("wind"), windText, Modifier.weight(1f)) {
+                    val dir = h.windDir
+                    if (dir != null) {
+                        Box(modifier = Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+                            // wind blows FROM dir, so the arrow points the opposite way
+                            Text(
+                                "↑",
+                                color = Accent,
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.rotate(((dir + 180.0) % 360.0).toFloat())
+                            )
+                        }
+                    }
+                }
+                InfoCell(t("humidity"), humText, Modifier.weight(1f))
+            }
+
+            Row(modifier = Modifier.fillMaxWidth()) {
+                InfoCell("QNH", qnhText, Modifier.weight(1f))
+                InfoCell("QFE", qfeText, Modifier.weight(1f))
             }
         }
     }
@@ -1296,16 +954,80 @@ fun parseMetar(raw: String): MetarResult {
     return MetarResult(station, raw, visibility, ceiling, category, color)
 }
 
-fun parseCloudLayers(raw: String): List<CloudLayer> {
-    val regex = Regex("""\b(FEW|SCT|BKN|OVC|VV)(\d{3})(CB|TCU)?\b""")
+private fun JSONArray.dbl(i: Int): Double? =
+    if (i >= length() || isNull(i)) null else optDouble(i)
 
-    return regex.findAll(raw.uppercase(Locale.US)).map {
-        CloudLayer(
-            amount = it.groupValues[1],
-            altitude = it.groupValues[2].toInt() * 100,
-            type = it.groupValues[3]
-        )
-    }.toList()
+/** ISA conversion from QNH (sea level) to the pressure at the airport elevation. */
+fun qfeFromQnh(qnh: Double, elevFt: Int): Double {
+    val hMeters = elevFt * 0.3048
+    return qnh * Math.pow(1.0 - 0.0065 * hMeters / 288.15, 5.255)
+}
+
+fun fetchForecast(airport: Airport, callback: (List<HourForecast>, String) -> Unit) {
+    thread {
+        try {
+            val url = URL(
+                String.format(
+                    Locale.US,
+                    "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f" +
+                            "&hourly=cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high," +
+                            "wind_speed_10m,wind_direction_10m,wind_gusts_10m," +
+                            "relative_humidity_2m,pressure_msl" +
+                            "&wind_speed_unit=kn&timezone=UTC&forecast_days=2",
+                    airport.lat, airport.lon
+                )
+            )
+            val hourly = JSONObject(download(url)).getJSONObject("hourly")
+            val times = hourly.getJSONArray("time")
+            val cloud = hourly.getJSONArray("cloud_cover")
+            val low = hourly.getJSONArray("cloud_cover_low")
+            val mid = hourly.getJSONArray("cloud_cover_mid")
+            val high = hourly.getJSONArray("cloud_cover_high")
+            val wSpeed = hourly.getJSONArray("wind_speed_10m")
+            val wDir = hourly.getJSONArray("wind_direction_10m")
+            val wGust = hourly.getJSONArray("wind_gusts_10m")
+            val rh = hourly.getJSONArray("relative_humidity_2m")
+            val pMsl = hourly.getJSONArray("pressure_msl")
+
+            val nowFmt = SimpleDateFormat("yyyy-MM-dd'T'HH:00", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+            val nowKey = nowFmt.format(Date())
+
+            val list = ArrayList<HourForecast>()
+            for (i in 0 until times.length()) {
+                val ts = times.getString(i)
+                if (ts < nowKey) continue
+                if (list.size >= 8) break
+
+                val qnh = pMsl.dbl(i)
+                list.add(
+                    HourForecast(
+                        time = ts.substring(8, 10) + "/" + ts.substring(5, 7) +
+                                "  " + ts.substring(11, 16) + "Z",
+                        cloud = cloud.dbl(i) ?: 0.0,
+                        low = low.dbl(i) ?: 0.0,
+                        mid = mid.dbl(i) ?: 0.0,
+                        high = high.dbl(i) ?: 0.0,
+                        windDir = wDir.dbl(i),
+                        windKt = wSpeed.dbl(i),
+                        gustKt = wGust.dbl(i),
+                        humidity = rh.dbl(i),
+                        qnh = qnh,
+                        qfe = qnh?.let { qfeFromQnh(it, airport.elevFt) }
+                    )
+                )
+            }
+
+            mainHandler.post {
+                callback(list, if (list.isEmpty()) "no_forecast" else "")
+            }
+        } catch (e: Exception) {
+            mainHandler.post {
+                callback(emptyList(), "err_forecast|${e.message ?: ""}")
+            }
+        }
+    }
 }
 
 private fun parseCsvLine(line: String): List<String> {
@@ -1363,7 +1085,11 @@ fun loadAirports(callback: (List<Airport>, String) -> Unit) {
                 val icao = f[12].ifBlank { f[1] }
                 if (!icao.matches(icaoRegex)) return@mapNotNull null
 
-                Airport(f[3], icao, f[10])
+                val lat = f[4].toDoubleOrNull() ?: return@mapNotNull null
+                val lon = f[5].toDoubleOrNull() ?: return@mapNotNull null
+                val elev = f[6].toDoubleOrNull()?.roundToInt() ?: 0
+
+                Airport(f[3], icao, f[10], lat, lon, elev)
             }.distinctBy { it.icao }.sortedBy { it.icao }
 
             airportsCache = parsed
