@@ -1,4 +1,3 @@
-
 package com.skymetarglobal.app
 
 import android.os.Bundle
@@ -6,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -17,6 +17,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
@@ -27,10 +28,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
-import java.util.TimeZone
+import java.util.*
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -90,23 +88,17 @@ val categories = listOf(
 
 fun parseNumber(value: String): Double? {
     if (value.isEmpty() || value == "////") return null
-    var text = value
-    var sign = 1.0
-    if (text.startsWith("M")) {
-        sign = -1.0
-        text = text.drop(1)
-    }
-    return text.toDoubleOrNull()?.times(sign)
+    val sign = if (value.startsWith("M")) -1.0 else 1.0
+    return value.removePrefix("M").toDoubleOrNull()?.times(sign)
 }
 
 fun parseVisibility(raw: String): Double? {
     val tokens = raw.uppercase(Locale.US).trim().split(Regex("\\s+"))
-    if (tokens.contains("CAVOK")) return 10.0
+    if ("CAVOK" in tokens) return 10.0
 
     val windIndex = tokens.indexOfFirst {
         it.matches(Regex("""(?:\d{3}|VRB)\d{2,3}(?:G\d{2,3})?KT"""))
     }
-
     val start = if (windIndex >= 0) windIndex + 1 else 0
 
     for (i in start until tokens.size) {
@@ -119,27 +111,22 @@ fun parseVisibility(raw: String): Double? {
 
         if (token.endsWith("SM")) {
             var value = token.removeSuffix("SM")
-            var whole = 0.0
+            val whole = if (i > 0 && tokens[i - 1].matches(Regex("\\d+"))) {
+                tokens[i - 1].toDoubleOrNull() ?: 0.0
+            } else 0.0
 
-            if (i > 0 && tokens[i - 1].matches(Regex("\\d+"))) {
-                whole = tokens[i - 1].toDoubleOrNull() ?: 0.0
-            }
-
-            if (value.startsWith("P") || value.startsWith("M")) {
-                value = value.drop(1)
-            }
+            value = value.removePrefix("P").removePrefix("M")
 
             val miles = if (value.contains("/")) {
                 val parts = value.split("/")
                 if (parts.size != 2) return null
-                val numerator = parts[0].toDoubleOrNull() ?: return null
-                val denominator = parts[1].toDoubleOrNull() ?: return null
-                if (denominator == 0.0) return null
-                whole + numerator / denominator
+                val n = parts[0].toDoubleOrNull() ?: return null
+                val d = parts[1].toDoubleOrNull() ?: return null
+                if (d == 0.0) return null
+                whole + n / d
             } else {
                 value.toDoubleOrNull() ?: continue
             }
-
             return miles * 1.60934
         }
     }
@@ -182,16 +169,14 @@ fun analyzeClouds(raw: String): CloudAnalysis {
         it.code == "BKN" || it.code == "OVC" || it.code == "VV"
     }
 
-    val unknown = ceilingLayers.any { it.height == null }
-    val ceiling = ceilingLayers.mapNotNull { it.height }.minOrNull()
-
-    return CloudAnalysis(layers, ceiling, unknown)
+    return CloudAnalysis(
+        layers,
+        ceilingLayers.mapNotNull { it.height }.minOrNull(),
+        ceilingLayers.any { it.height == null }
+    )
 }
 
-fun classifyMetar(
-    visibility: Double?,
-    clouds: CloudAnalysis
-): Category? {
+fun classifyMetar(visibility: Double?, clouds: CloudAnalysis): Category? {
     if (visibility == null || clouds.unknownCeiling) return null
     val ceiling = clouds.ceiling ?: Int.MAX_VALUE
 
@@ -200,15 +185,13 @@ fun classifyMetar(
     } ?: categories.last()
 }
 
-fun extractWind(raw: String): String {
-    return Regex("""(?:\d{3}|VRB)\d{2,3}(?:G\d{2,3})?KT""")
+fun extractWind(raw: String): String =
+    Regex("""(?:\d{3}|VRB)\d{2,3}(?:G\d{2,3})?KT""")
         .find(raw.uppercase(Locale.US))?.value ?: "Unavailable"
-}
 
 fun extractTemperature(raw: String): Pair<String, String> {
     val match = Regex("""(?<![A-Z0-9])(M?\d{2})/(M?\d{2})(?![A-Z0-9])""")
         .find(raw.uppercase(Locale.US)) ?: return Pair("—", "—")
-
     val t = parseNumber(match.groupValues[1])
     val d = parseNumber(match.groupValues[2])
     return Pair(t?.let { "$it °C" } ?: "—", d?.let { "$it °C" } ?: "—")
@@ -218,15 +201,12 @@ fun extractPressure(raw: String): String {
     val qnh = Regex("""(?<![A-Z0-9])Q\d{4}""")
         .find(raw.uppercase(Locale.US))
     if (qnh != null) return "${qnh.value} hPa"
-
     return Regex("""(?<![A-Z0-9])A\d{4}""")
         .find(raw.uppercase(Locale.US))?.value ?: "Unavailable"
 }
 
-fun extractObservation(raw: String): String {
-    return Regex("""(?<!\d)\d{6}Z""")
-        .find(raw.uppercase(Locale.US))?.value ?: "Unavailable"
-}
+fun extractObservation(raw: String): String =
+    Regex("""(?<!\d)\d{6}Z""").find(raw.uppercase(Locale.US))?.value ?: "Unavailable"
 
 fun utcFormat(epoch: Long): String {
     val sdf = SimpleDateFormat("HH:mm 'UTC'", Locale.US)
@@ -245,7 +225,6 @@ fun jsonClouds(item: JSONObject): List<ForecastCloud> {
         val type = cloud.optString("type", "Not specified")
         result.add(ForecastCloud(cover, base, type))
     }
-
     return result
 }
 
@@ -264,7 +243,6 @@ fun fetchTafForecast(
 ) {
     Thread {
         var connection: HttpURLConnection? = null
-
         try {
             val url = URL(
                 "https://aviationweather.gov/api/data/taf?ids=$code&format=json"
@@ -301,10 +279,7 @@ fun fetchTafForecast(
                     val period = periods.optJSONObject(i) ?: continue
                     val from = period.optLong("timeFrom", 0L)
                     val to = period.optLong("timeTo", 0L)
-
-                    if (from <= target && target < to) {
-                        selected = period
-                    }
+                    if (from <= target && target < to) selected = period
                 }
 
                 if (selected == null) {
@@ -341,7 +316,10 @@ fun resolveTafTime(day: Int, hour: Int, reference: Long): Long {
     cal.set(Calendar.MINUTE, 0)
     cal.set(Calendar.SECOND, 0)
     cal.set(Calendar.MILLISECOND, 0)
-    cal.set(Calendar.DAY_OF_MONTH, day.coerceIn(1, cal.getActualMaximum(Calendar.DAY_OF_MONTH)))
+    cal.set(
+        Calendar.DAY_OF_MONTH,
+        day.coerceIn(1, cal.getActualMaximum(Calendar.DAY_OF_MONTH))
+    )
 
     var value = cal.timeInMillis / 1000L
     val diff = value - reference
@@ -379,19 +357,21 @@ fun parseManualTaf(raw: String): List<HourCloudForecast> {
         .findAll(text).toList()
 
     val segments = mutableListOf<ManualSegment>()
-
     val firstEnd = markers.firstOrNull()?.range?.first ?: text.length
     val initialText = text.substring(validity.range.last + 1, firstEnd)
-    val initialLayers = cloudLayersFromText(initialText)
-    val initialClear = Regex("""\b(SKC|CLR|NSC|NCD)\b""").containsMatchIn(initialText)
 
-    segments.add(ManualSegment(start, initialLayers, initialClear))
+    segments.add(
+        ManualSegment(
+            start,
+            cloudLayersFromText(initialText),
+            Regex("""\b(SKC|CLR|NSC|NCD)\b""").containsMatchIn(initialText)
+        )
+    )
 
     markers.forEachIndexed { index, marker ->
         val day = marker.groupValues[1].toInt()
         val hour = marker.groupValues[2].toInt()
         val minute = marker.groupValues[3].toInt()
-
         val segmentStart = resolveTafTime(day, hour, now) + minute * 60L
         val nextEnd = markers.getOrNull(index + 1)?.range?.first ?: text.length
         val block = text.substring(marker.range.last + 1, nextEnd)
@@ -406,8 +386,8 @@ fun parseManualTaf(raw: String): List<HourCloudForecast> {
     }
 
     val sorted = segments.sortedBy { it.start }
-    var inherited = initialLayers
-    var inheritedClear = initialClear
+    var inherited = emptyList<ForecastCloud>()
+    var inheritedClear = false
 
     val effective = sorted.map { segment ->
         if (segment.layers.isNotEmpty() || segment.clear) {
@@ -434,8 +414,144 @@ fun parseManualTaf(raw: String): List<HourCloudForecast> {
             )
         )
     }
-
     return output
+}
+
+/* PROFESSIONAL CLOUD PROFILE */
+
+@Composable
+fun CloudProfileChart(forecast: List<HourCloudForecast>) {
+    val gridColor = Color(0xFF456078)
+    val maxHeightFt = 12000f
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF102638), RoundedCornerShape(16.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            "CLOUD VERTICAL PROFILE",
+            color = Color.White,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            "Cloud base height • Feet AGL • UTC",
+            color = Color(0xFF9EB4C8),
+            fontSize = 11.sp
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            listOf("12k", "9k", "6k", "3k", "0").forEach {
+                Text(it, color = Color(0xFFB9D9F2), fontSize = 10.sp)
+            }
+        }
+
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(220.dp)
+        ) {
+            val left = 8f
+            val right = size.width - 8f
+            val top = 8f
+            val bottom = size.height - 8f
+            val chartHeight = bottom - top
+            val chartWidth = right - left
+
+            for (level in 0..4) {
+                val y = top + chartHeight * level / 4f
+                drawLine(
+                    color = gridColor,
+                    start = Offset(left, y),
+                    end = Offset(right, y),
+                    strokeWidth = 1.dp.toPx()
+                )
+            }
+
+            for (hour in 0..7) {
+                val x = left + chartWidth * hour / 7f
+                drawLine(
+                    color = gridColor.copy(alpha = 0.55f),
+                    start = Offset(x, top),
+                    end = Offset(x, bottom),
+                    strokeWidth = 1.dp.toPx()
+                )
+            }
+
+            forecast.forEachIndexed { index, hour ->
+                if (!hour.available) return@forEachIndexed
+
+                val x = left + chartWidth * index / 7f
+
+                hour.layers.forEachIndexed { layerIndex, layer ->
+                    val base = layer.baseFt ?: return@forEachIndexed
+                    val y = bottom -
+                        (base.coerceIn(0, 12000) / maxHeightFt) * chartHeight
+
+                    val color = when (layer.cover) {
+                        "FEW" -> Color(0xFF70C8FF)
+                        "SCT" -> Color(0xFF9AC7E8)
+                        "BKN" -> Color(0xFFB2BEC9)
+                        "OVC" -> Color(0xFF71869B)
+                        "VV" -> Color(0xFFB48EDE)
+                        else -> Color(0xFFB9D9F2)
+                    }
+
+                    val radius = 7.dp.toPx()
+                    val cloudY = y - layerIndex * 13.dp.toPx()
+
+                    drawCircle(
+                        color = color,
+                        radius = radius,
+                        center = Offset(x - 8.dp.toPx(), cloudY)
+                    )
+                    drawCircle(
+                        color = color,
+                        radius = radius * 1.25f,
+                        center = Offset(x, cloudY - 3.dp.toPx())
+                    )
+                    drawCircle(
+                        color = color,
+                        radius = radius * 0.9f,
+                        center = Offset(x + 9.dp.toPx(), cloudY)
+                    )
+                    drawLine(
+                        color = color,
+                        start = Offset(x - 12.dp.toPx(), cloudY + 5.dp.toPx()),
+                        end = Offset(x + 12.dp.toPx(), cloudY + 5.dp.toPx()),
+                        strokeWidth = 3.dp.toPx()
+                    )
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            forecast.forEachIndexed { index, hour ->
+                if (index % 2 == 0) {
+                    Text(
+                        hour.time,
+                        color = Color(0xFFB9D9F2),
+                        fontSize = 9.sp
+                    )
+                }
+            }
+        }
+
+        Text(
+            "Cloud symbols use reported cloud-base heights.",
+            color = Color(0xFF9EB4C8),
+            fontSize = 10.sp
+        )
+    }
 }
 
 @Composable
@@ -904,15 +1020,9 @@ fun SkyMetarApp() {
                             }
 
                             if (!hour.available) {
-                                Text(
-                                    "No TAF data for this hour",
-                                    color = muted
-                                )
+                                Text("No TAF data for this hour", color = muted)
                             } else if (hour.layers.isEmpty()) {
-                                Text(
-                                    "No cloud layer reported",
-                                    color = Color(0xFFB9D9F2)
-                                )
+                                Text("No cloud layer reported", color = Color(0xFFB9D9F2))
                             } else {
                                 hour.layers.forEach { layer ->
                                     Row(
@@ -941,14 +1051,16 @@ fun SkyMetarApp() {
 
                             Text(
                                 "CEILING: " +
-                                    (hour.ceilingFt?.let { "$it ft" }
-                                        ?: "Not reported"),
+                                    (hour.ceilingFt?.let { "$it ft" } ?: "Not reported"),
                                 color = white,
                                 fontSize = 12.sp
                             )
                         }
                     }
                 }
+
+                // رقم 2: استدعاء المنحنى في المكان الصحيح
+                CloudProfileChart(forecast)
 
                 Text(
                     "Cloud profile: cloud base heights are shown in feet AGL when supplied by TAF.",
@@ -973,4 +1085,3 @@ fun SkyMetarApp() {
         }
     }
 }
-
