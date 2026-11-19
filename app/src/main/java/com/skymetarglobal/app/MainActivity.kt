@@ -1,12 +1,12 @@
 package com.skymetarglobal.app
 
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -17,11 +17,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.json.JSONArray
-import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
-import kotlin.concurrent.thread
 import java.util.Locale
+import kotlin.concurrent.thread
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,6 +40,9 @@ private val Panel = Color(0xFF13243A)
 private val Accent = Color(0xFF35B9E9)
 private val White = Color(0xFFF4F7FC)
 private val Muted = Color(0xFF9EADC0)
+
+private val mainHandler = Handler(Looper.getMainLooper())
+private var airportsCache: List<Airport>? = null
 
 data class MetarResult(
     val station: String,
@@ -93,22 +95,18 @@ fun SkyMetarApp() {
                     text = "METAR & TAF",
                     selected = selectedTab == "METAR & TAF",
                     modifier = Modifier.weight(1f)
-                ) {
-                    selectedTab = "METAR & TAF"
-                }
+                ) { selectedTab = "METAR & TAF" }
 
                 TabButton(
                     text = "CLOUDS",
                     selected = selectedTab == "CLOUDS",
                     modifier = Modifier.weight(1f)
-                ) {
-                    selectedTab = "CLOUDS"
-                }
+                ) { selectedTab = "CLOUDS" }
             }
 
             when (selectedTab) {
-                "METAR & TAF" -> MetarTafScreen()
-                "CLOUDS" -> CloudsScreen()
+                "METAR & TAF" -> MetarTafScreen(Modifier.weight(1f))
+                "CLOUDS" -> CloudsScreen(Modifier.weight(1f))
             }
         }
     }
@@ -128,7 +126,6 @@ fun Header() {
             fontWeight = FontWeight.Bold,
             color = White
         )
-
         Text(
             text = "GLOBAL AVIATION WEATHER",
             fontSize = 11.sp,
@@ -157,20 +154,22 @@ fun TabButton(
         Text(text, fontWeight = FontWeight.Bold)
     }
 }
+
 @Composable
-fun MetarTafScreen() {
+fun MetarTafScreen(modifier: Modifier = Modifier) {
     var station by remember { mutableStateOf("GMMG") }
     var manualMetar by remember { mutableStateOf("") }
     var manualTaf by remember { mutableStateOf("") }
-    var metarResult by remember { mutableStateOf<MetarResult?>(null) }
+    var liveResult by remember { mutableStateOf<MetarResult?>(null) }
+    var manualResult by remember { mutableStateOf<MetarResult?>(null) }
     var liveMetar by remember { mutableStateOf("") }
     var liveTaf by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
+        modifier = modifier
+            .fillMaxWidth()
             .verticalScroll(rememberScrollState())
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -187,12 +186,17 @@ fun MetarTafScreen() {
 
         Button(
             onClick = {
+                val id = station.trim()
+                if (id.length != 4) {
+                    message = "أدخل رمز ICAO من 4 أحرف"
+                    return@Button
+                }
                 loading = true
                 message = "جاري البحث..."
-                fetchWeather(station.trim()) { metar, taf, error ->
+                fetchWeather(id) { metar, taf, error ->
                     liveMetar = metar
                     liveTaf = taf
-                    metarResult = if (metar.isNotBlank()) parseMetar(metar) else null
+                    liveResult = if (metar.isNotBlank()) parseMetar(metar) else null
                     message = error
                     loading = false
                 }
@@ -211,9 +215,7 @@ fun MetarTafScreen() {
             WeatherCard("LIVE METAR", liveMetar)
         }
 
-        metarResult?.let {
-            CategoryCard(it)
-        }
+        liveResult?.let { CategoryCard(it) }
 
         HorizontalDivider(color = Muted.copy(alpha = 0.3f))
 
@@ -229,16 +231,14 @@ fun MetarTafScreen() {
 
         Button(
             onClick = {
-                metarResult = parseMetar(manualMetar)
+                manualResult = if (manualMetar.isNotBlank()) parseMetar(manualMetar) else null
             },
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("ANALYZE METAR")
         }
 
-        metarResult?.let {
-            CategoryCard(it)
-        }
+        manualResult?.let { CategoryCard(it) }
 
         HorizontalDivider(color = Muted.copy(alpha = 0.3f))
 
@@ -261,9 +261,7 @@ fun MetarTafScreen() {
         )
 
         Button(
-            onClick = {
-                liveTaf = manualTaf
-            },
+            onClick = { liveTaf = manualTaf },
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("DISPLAY MANUAL TAF")
@@ -288,6 +286,9 @@ fun WeatherCard(title: String, value: String) {
 
 @Composable
 fun CategoryCard(result: MetarResult) {
+    val visText = result.visibility?.let { String.format(Locale.US, "%.1f", it) } ?: "Unknown"
+    val ceilText = result.ceiling?.let { "$it ft" } ?: "None"
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = result.color),
@@ -301,19 +302,14 @@ fun CategoryCard(result: MetarResult) {
                 fontWeight = FontWeight.Bold
             )
             Text("Station: ${result.station}", color = Color.Black)
-            Text(
-                "Visibility: ${result.visibility ?: "Unknown"} km",
-                color = Color.Black
-            )
-            Text(
-                "Ceiling: ${result.ceiling?.let { "$it ft" } ?: "Unknown"}",
-                color = Color.Black
-            )
+            Text("Visibility: $visText km", color = Color.Black)
+            Text("Ceiling: $ceilText", color = Color.Black)
         }
     }
- 
-    @Composable
-fun CloudsScreen() {
+}
+
+@Composable
+fun CloudsScreen(modifier: Modifier = Modifier) {
     var city by remember { mutableStateOf("") }
     var airports by remember { mutableStateOf(listOf<Airport>()) }
     var selectedAirport by remember { mutableStateOf<Airport?>(null) }
@@ -323,8 +319,8 @@ fun CloudsScreen() {
     var layers by remember { mutableStateOf(listOf<CloudLayer>()) }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
+        modifier = modifier
+            .fillMaxWidth()
             .verticalScroll(rememberScrollState())
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -346,9 +342,13 @@ fun CloudsScreen() {
 
         Button(
             onClick = {
+                if (city.isBlank()) {
+                    message = "اكتب اسم المدينة"
+                    return@Button
+                }
                 loading = true
                 message = "Searching airports..."
-                searchAirports(city) { results, error ->
+                searchAirports(city.trim()) { results, error ->
                     airports = results
                     message = error
                     loading = false
@@ -382,7 +382,7 @@ fun CloudsScreen() {
             ) {
                 Column(Modifier.padding(12.dp)) {
                     Text(airport.name, color = White, fontWeight = FontWeight.Bold)
-                    Text("${airport.city} • ${airport.icao}", color = Muted)
+                    Text("${airport.icao} - ${airport.city}", color = Muted)
                 }
             }
         }
@@ -403,7 +403,7 @@ fun CloudsScreen() {
             WeatherCard("LIVE TAF", taf)
             Text("CLOUD PROFILE", color = Accent, fontWeight = FontWeight.Bold)
             CloudProfile(layers)
-        } else {
+        } else if (selectedAirport == null) {
             Text(
                 "Select an airport to load its cloud forecast.",
                 color = Muted
@@ -414,8 +414,6 @@ fun CloudsScreen() {
 
 @Composable
 fun CloudProfile(layers: List<CloudLayer>) {
-    val maxAltitude = 20000
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -450,15 +448,23 @@ fun CloudProfile(layers: List<CloudLayer>) {
                         color = Muted.copy(alpha = 0.2f)
                     )
 
-                    layers.filter {
-                        (it.altitude / 5000) * 5000 == altitude
-                    }.forEach {
-                        Text(
-                            "${it.amount} ${it.type}",
-                            color = Accent,
-                            modifier = Modifier.align(Alignment.CenterStart),
-                            fontWeight = FontWeight.Bold
-                        )
+                    val inBand = layers.filter {
+                        val band = minOf((it.altitude / 5000) * 5000, 20000)
+                        band == altitude
+                    }
+
+                    Row(
+                        modifier = Modifier.align(Alignment.CenterStart),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        inBand.forEach {
+                            Text(
+                                "${it.amount}${it.altitude / 100} ${it.type}".trim(),
+                                color = Accent,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
+                        }
                     }
                 }
             }
@@ -471,36 +477,34 @@ fun CloudProfile(layers: List<CloudLayer>) {
         )
     }
 }
+
+private fun download(url: URL): String {
+    val connection = url.openConnection() as HttpURLConnection
+    connection.connectTimeout = 15000
+    connection.readTimeout = 15000
+    connection.setRequestProperty("User-Agent", "SkyMetarGlobal")
+    return try {
+        if (connection.responseCode == 204) ""
+        else connection.inputStream.bufferedReader().use { it.readText() }
+    } finally {
+        connection.disconnect()
+    }
 }
+
 fun fetchWeather(
     station: String,
     callback: (String, String, String) -> Unit
 ) {
     thread {
         try {
-            val metarUrl =
-                URL("https://aviationweather.gov/api/data/metar?ids=$station&format=json")
+            val metarUrl = URL("https://aviationweather.gov/api/data/metar?ids=$station&format=json")
+            val tafUrl = URL("https://aviationweather.gov/api/data/taf?ids=$station&format=json")
 
-            val tafUrl =
-                URL("https://aviationweather.gov/api/data/taf?ids=$station&format=json")
+            val metarJson = download(metarUrl).trim()
+            val tafJson = download(tafUrl).trim()
 
-            fun download(url: URL): String {
-                val connection = url.openConnection() as HttpURLConnection
-                connection.connectTimeout = 15000
-                connection.readTimeout = 15000
-                connection.setRequestProperty("User-Agent", "SkyMetarGlobal")
-                return try {
-                    connection.inputStream.bufferedReader().use { it.readText() }
-                } finally {
-                    connection.disconnect()
-                }
-            }
-
-            val metarJson = download(metarUrl)
-            val tafJson = download(tafUrl)
-
-            val metar = JSONArray(metarJson)
-            val taf = JSONArray(tafJson)
+            val metar = if (metarJson.startsWith("[")) JSONArray(metarJson) else JSONArray()
+            val taf = if (tafJson.startsWith("[")) JSONArray(tafJson) else JSONArray()
 
             val metarText = if (metar.length() > 0) {
                 metar.getJSONObject(0).optString("rawOb", "")
@@ -510,17 +514,16 @@ fun fetchWeather(
                 taf.getJSONObject(0).optString("rawTAF", "")
             } else ""
 
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
+            mainHandler.post {
                 callback(
                     metarText,
                     tafText,
                     if (metarText.isBlank() && tafText.isBlank())
-                        "No METAR or TAF found for $station"
-                    else ""
+                        "No METAR or TAF found for $station" else ""
                 )
             }
         } catch (e: Exception) {
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
+            mainHandler.post {
                 callback("", "", "Network error: ${e.message}")
             }
         }
@@ -528,49 +531,66 @@ fun fetchWeather(
 }
 
 fun parseMetar(raw: String): MetarResult {
-    val text = raw.uppercase(Locale.US)
-    val station = Regex("\\b[A-Z]{4}\\b")
-        .find(text)?.value ?: "UNKNOWN"
+    val text = " " + raw.uppercase(Locale.US).trim() + " "
 
-    val visibilityMatch =
-        Regex("\\b(\\d{4})\\b").findAll(text).lastOrNull()
+    val station = Regex("""(?:METAR|SPECI)?\s*(?:COR\s+)?\b([A-Z]{4})\b\s+\d{6}Z""")
+        .find(text)?.groupValues?.get(1)
+        ?: Regex("""\b[A-Z]{4}\b""").find(text)?.value
+        ?: "UNKNOWN"
 
-    val visibility = visibilityMatch?.value?.toDoubleOrNull()?.let {
-        if (it == 9999.0) 10.0 else it / 1000.0
+    // Visibility in km
+    val visibility: Double? = when {
+        text.contains("CAVOK") -> 10.0
+        else -> {
+            val sm = Regex("""\s(?:(\d+)\s)?(\d+)(?:/(\d+))?SM\s""").find(text)
+            if (sm != null) {
+                val whole = sm.groupValues[1].toDoubleOrNull() ?: 0.0
+                val num = sm.groupValues[2].toDoubleOrNull() ?: 0.0
+                val den = sm.groupValues[3].toDoubleOrNull()
+                val miles = if (den != null && den != 0.0) whole + num / den else whole + num
+                miles * 1.609
+            } else {
+                Regex("""\s(\d{4})(?=\s)""").find(text)?.groupValues?.get(1)?.toDoubleOrNull()?.let {
+                    if (it >= 9999.0) 10.0 else it / 1000.0
+                }
+            }
+        }
     }
 
-    val cloudHeights = Regex("\\b(?:BKN|OVC|VV)(\\d{3})\\b")
+    val cloudHeights = Regex("""\b(?:BKN|OVC|VV)(\d{3})""")
         .findAll(text)
         .mapNotNull { it.groupValues[1].toIntOrNull()?.times(100) }
         .toList()
 
+    // null = no ceiling (clear / few / scattered / CAVOK)
     val ceiling = cloudHeights.minOrNull()
+    val effectiveCeiling = ceiling ?: Int.MAX_VALUE
 
     val category: String
     val color: Color
 
     when {
-        visibility == null || ceiling == null -> {
+        visibility == null -> {
             category = "GREY"
             color = Color(0xFF9E9E9E)
         }
-        visibility >= 8 && ceiling >= 2500 -> {
+        visibility >= 8 && effectiveCeiling >= 2500 -> {
             category = "BLUE"
             color = Color(0xFF42A5F5)
         }
-        visibility >= 5 && ceiling >= 1500 -> {
+        visibility >= 5 && effectiveCeiling >= 1500 -> {
             category = "GREEN"
             color = Color(0xFF4CAF50)
         }
-        visibility >= 5 && ceiling >= 1000 -> {
+        visibility >= 5 && effectiveCeiling >= 1000 -> {
             category = "GREEN / YELLOW"
             color = Color(0xFFCDDC39)
         }
-        visibility >= 3 && ceiling >= 500 -> {
+        visibility >= 3 && effectiveCeiling >= 500 -> {
             category = "YELLOW"
             color = Color(0xFFFFEB3B)
         }
-        visibility >= 1.5 && ceiling >= 350 -> {
+        visibility >= 1.5 && effectiveCeiling >= 350 -> {
             category = "YELLOW / RED"
             color = Color(0xFFFF9800)
         }
@@ -580,20 +600,11 @@ fun parseMetar(raw: String): MetarResult {
         }
     }
 
-    return MetarResult(
-        station,
-        raw,
-        visibility,
-        ceiling,
-        category,
-        color
-    )
+    return MetarResult(station, raw, visibility, ceiling, category, color)
 }
 
 fun parseCloudLayers(raw: String): List<CloudLayer> {
-    val regex = Regex(
-        "\\b(FEW|SCT|BKN|OVC|VV)(\\d{3})(CB|TCU)?\\b"
-    )
+    val regex = Regex("""\b(FEW|SCT|BKN|OVC|VV)(\d{3})(CB|TCU)?\b""")
 
     return regex.findAll(raw.uppercase(Locale.US)).map {
         CloudLayer(
@@ -604,51 +615,82 @@ fun parseCloudLayers(raw: String): List<CloudLayer> {
     }.toList()
 }
 
+private fun parseCsvLine(line: String): List<String> {
+    val out = ArrayList<String>()
+    val sb = StringBuilder()
+    var inQuotes = false
+    var i = 0
+    while (i < line.length) {
+        val c = line[i]
+        when {
+            c == '"' && inQuotes && i + 1 < line.length && line[i + 1] == '"' -> {
+                sb.append('"'); i++
+            }
+            c == '"' -> inQuotes = !inQuotes
+            c == ',' && !inQuotes -> {
+                out.add(sb.toString()); sb.setLength(0)
+            }
+            else -> sb.append(c)
+        }
+        i++
+    }
+    out.add(sb.toString())
+    return out
+}
+
 fun searchAirports(
     city: String,
     callback: (List<Airport>, String) -> Unit
 ) {
     thread {
         try {
-            val url = URL(
-                "https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/airports.csv"
-            )
+            // Download once, then reuse (the file is large)
+            val all = airportsCache ?: run {
+                val url = URL(
+                    "https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/airports.csv"
+                )
+                val connection = url.openConnection() as HttpURLConnection
+                connection.connectTimeout = 20000
+                connection.readTimeout = 30000
+                val lines = try {
+                    connection.inputStream.bufferedReader().readLines()
+                } finally {
+                    connection.disconnect()
+                }
 
-            val connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 20000
-            connection.readTimeout = 30000
+                // Columns: 0 id, 1 ident, 2 type, 3 name, ..., 10 municipality,
+                // 11 scheduled_service, 12 icao_code, ...
+                val parsed = lines.drop(1).mapNotNull { line ->
+                    val f = parseCsvLine(line)
+                    if (f.size < 13) return@mapNotNull null
 
-            val lines = connection.inputStream.bufferedReader().readLines()
-            connection.disconnect()
+                    val type = f[2]
+                    val scheduled = f[11]
+                    val icao = f[12].ifBlank { f[1] }
 
-            val results = lines.drop(1).mapNotNull { line ->
-                val fields = line.split(",")
-                if (fields.size < 14) return@mapNotNull null
+                    if (
+                        (type == "large_airport" || type == "medium_airport") &&
+                        scheduled == "yes" &&
+                        icao.matches(Regex("[A-Z]{4}"))
+                    ) Airport(f[3], icao, f[10]) else null
+                }
+                airportsCache = parsed
+                parsed
+            }
 
-                val name = fields[3].trim('"')
-                val municipality = fields[10].trim('"')
-                val icao = fields[5].trim('"')
-                val type = fields[2].trim('"')
-                val scheduled = fields[13].trim('"')
-
-                if (
-                    municipality.contains(city, ignoreCase = true) &&
-                    (type == "large_airport" || type == "medium_airport") &&
-                    scheduled == "yes" &&
-                    icao.matches(Regex("[A-Z]{4}"))
-                ) {
-                    Airport(name, icao, municipality)
-                } else null
+            val results = all.filter {
+                it.city.contains(city, ignoreCase = true) ||
+                        it.name.contains(city, ignoreCase = true)
             }.take(30)
 
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
+            mainHandler.post {
                 callback(
                     results,
                     if (results.isEmpty()) "No airports found for this city." else ""
                 )
             }
         } catch (e: Exception) {
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
+            mainHandler.post {
                 callback(emptyList(), "Airport search error: ${e.message}")
             }
         }
