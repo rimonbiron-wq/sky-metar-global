@@ -24,12 +24,12 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalLayoutDirection
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.text.input.ImeAction
@@ -176,8 +176,7 @@ fun SkyMetarApp(initialLang: Lang = Lang.EN, onLangChange: (Lang) -> Unit = {}) 
 
     CompositionLocalProvider(
         LocalLang provides lang,
-        LocalLayoutDirection provides
-                if (lang == Lang.AR) LayoutDirection.Rtl else LayoutDirection.Ltr
+        LocalLayoutDirection provides (if (lang == Lang.AR) LayoutDirection.Rtl else LayoutDirection.Ltr)
     ) {
         MaterialTheme(
             colorScheme = darkColorScheme(
@@ -866,9 +865,36 @@ fun LegendItem(color: Color, text: String, dashed: Boolean = false) {
     }
 }
 
+private fun DrawScope.labelPaint(sizeSp: Float, color: Color, bold: Boolean): android.graphics.Paint =
+    android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = sizeSp.sp.toPx()
+        this.color = color.toArgb()
+        typeface = if (bold) android.graphics.Typeface.DEFAULT_BOLD
+        else android.graphics.Typeface.DEFAULT
+    }
+
+private fun DrawScope.labelWidth(text: String, sizeSp: Float, bold: Boolean = false): Float =
+    labelPaint(sizeSp, Color.Black, bold).measureText(text)
+
+private fun DrawScope.labelHeight(sizeSp: Float): Float {
+    val fm = labelPaint(sizeSp, Color.Black, false).fontMetrics
+    return fm.descent - fm.ascent
+}
+
+private fun DrawScope.drawLabel(
+    text: String,
+    left: Float,
+    top: Float,
+    color: Color,
+    sizeSp: Float,
+    bold: Boolean = false
+) {
+    val paint = labelPaint(sizeSp, color, bold)
+    drawContext.canvas.nativeCanvas.drawText(text, left, top - paint.fontMetrics.ascent, paint)
+}
+
 @Composable
 fun CloudTimelineChart(tl: TafTimeline) {
-    val textMeasurer = rememberTextMeasurer()
     val clearText = t("clear")
     val nowText = t("now")
 
@@ -938,18 +964,16 @@ fun CloudTimelineChart(tl: TafTimeline) {
             fun yOf(alt: Int): Float = bottom - (alt.toFloat() / topAlt) * ph
 
             val gridColor = Muted.copy(alpha = 0.18f)
-            val axisStyle = TextStyle(color = Muted, fontSize = 9.sp)
 
             // horizontal grid + altitude labels
             var alt = 0
             while (alt <= topAlt) {
                 val y = yOf(alt)
                 drawLine(gridColor, Offset(left, y), Offset(left + pw, y), strokeWidth = 1f)
-                val res = textMeasurer.measure(alt.toString(), axisStyle)
-                drawText(
-                    res,
-                    topLeft = Offset(left - res.size.width - 6.dp.toPx(), y - res.size.height / 2f)
-                )
+                val text = alt.toString()
+                val w = labelWidth(text, 9f)
+                val h = labelHeight(9f)
+                drawLabel(text, left - w - 6.dp.toPx(), y - h / 2f, Muted, 9f)
                 alt += step
             }
 
@@ -964,36 +988,32 @@ fun CloudTimelineChart(tl: TafTimeline) {
                 val text = if (midnight)
                     String.format(Locale.US, "%02d/00", ((tl.startDay - 1 + abs / 24) % 31) + 1)
                 else String.format(Locale.US, "%02d", hr)
-                val res = textMeasurer.measure(
+                val w = labelWidth(text, 9f, midnight)
+                drawLabel(
                     text,
-                    TextStyle(
-                        color = if (midnight) Accent else Muted,
-                        fontSize = 9.sp,
-                        fontWeight = if (midnight) FontWeight.Bold else FontWeight.Normal
-                    )
-                )
-                drawText(
-                    res,
-                    topLeft = Offset(
-                        (x - res.size.width / 2f).coerceIn(0f, size.width - res.size.width),
-                        bottom + 5.dp.toPx()
-                    )
+                    (x - w / 2f).coerceIn(0f, size.width - w),
+                    bottom + 5.dp.toPx(),
+                    if (midnight) Accent else Muted,
+                    9f,
+                    midnight
                 )
                 k += labelStep
             }
 
             // clear / CAVOK spans
             tl.clearSpans.forEach { (s0, e0) ->
-                val res = textMeasurer.measure(
-                    clearText,
-                    TextStyle(color = Accent.copy(alpha = 0.55f), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                )
                 val x0 = xOf(s0)
                 val x1 = xOf(e0)
-                if (x1 - x0 > res.size.width + 8.dp.toPx()) {
-                    drawText(
-                        res,
-                        topLeft = Offset((x0 + x1) / 2f - res.size.width / 2f, yOf(topAlt / 2) - res.size.height / 2f)
+                val w = labelWidth(clearText, 11f, true)
+                val h = labelHeight(11f)
+                if (x1 - x0 > w + 8.dp.toPx()) {
+                    drawLabel(
+                        clearText,
+                        (x0 + x1) / 2f - w / 2f,
+                        yOf(topAlt / 2) - h / 2f,
+                        Accent.copy(alpha = 0.55f),
+                        11f,
+                        true
                     )
                 }
             }
@@ -1059,20 +1079,18 @@ fun CloudTimelineChart(tl: TafTimeline) {
                         else -> ""
                     }
                     val inside = b.mode == BarMode.SOLID && thick >= 14.dp.toPx()
-                    val res = textMeasurer.measure(
-                        prefix + layerLabel(b.layer),
-                        TextStyle(
-                            color = if (inside) Background else if (b.mode == BarMode.TEMPO) color else White,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    )
-                    if (x1 - x0 >= res.size.width * 0.6f && res.size.width < size.width) {
-                        val tx = ((x0 + x1) / 2f - res.size.width / 2f)
-                            .coerceIn(0f, size.width - res.size.width)
-                        val ty = if (inside) yTop + (thick - res.size.height) / 2f
-                        else yTop - res.size.height - 1.dp.toPx()
-                        drawText(res, topLeft = Offset(tx, ty))
+                    val text = prefix + layerLabel(b.layer)
+                    val w = labelWidth(text, 9f, true)
+                    val h = labelHeight(9f)
+                    val labelColor = when {
+                        inside -> Background
+                        b.mode == BarMode.TEMPO -> color
+                        else -> White
+                    }
+                    if (x1 - x0 >= w * 0.6f && w < size.width) {
+                        val tx = ((x0 + x1) / 2f - w / 2f).coerceIn(0f, size.width - w)
+                        val ty = if (inside) yTop + (thick - h) / 2f else yTop - h - 1.dp.toPx()
+                        drawLabel(text, tx, ty, labelColor, 9f, true)
                     }
                 }
             }
@@ -1085,13 +1103,14 @@ fun CloudTimelineChart(tl: TafTimeline) {
                     strokeWidth = 2f,
                     pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f))
                 )
-                val res = textMeasurer.measure(
+                val w = labelWidth(nowText, 9f, true)
+                drawLabel(
                     nowText,
-                    TextStyle(color = Color(0xFFFF5252), fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                )
-                drawText(
-                    res,
-                    topLeft = Offset((x + 3.dp.toPx()).coerceAtMost(size.width - res.size.width), topPad)
+                    (x + 3.dp.toPx()).coerceAtMost(size.width - w),
+                    topPad,
+                    Color(0xFFFF5252),
+                    9f,
+                    true
                 )
             }
         }
@@ -1120,12 +1139,15 @@ fun CloudTimelineChart(tl: TafTimeline) {
                 g.kind == "BECMG" -> Color(0xFFFFB74D)
                 else -> Color(0xFFFF7043)
             }
+            val cloudless = if (g.clear) t("clear_desc") else t("no_cloud")
+            val cigWord = t("cig")
+            val ftWord = t("ft")
             val desc = if (g.layers.isEmpty()) {
-                if (g.clear) "Clear (SKC / NSC / CAVOK)" else "No cloud data"
+                cloudless
             } else {
                 val cig = ceilingOf(g.layers)
                 g.layers.joinToString("  ") { layerLabel(it) } +
-                        (cig?.let { "   ·  ${t("cig")} $it ${t("ft")}" } ?: "")
+                        (if (cig != null) "   ·  $cigWord $cig $ftWord" else "")
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
