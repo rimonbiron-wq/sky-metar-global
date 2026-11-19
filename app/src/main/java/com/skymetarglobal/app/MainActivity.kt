@@ -19,26 +19,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.LayoutDirection
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.math.BigDecimal
@@ -46,20 +41,21 @@ import java.math.RoundingMode
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
-import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import kotlin.concurrent.thread
-import kotlinx.coroutines.launch
+import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        window.statusBarColor = android.graphics.Color.rgb(8, 17, 35)
-        window.navigationBarColor = android.graphics.Color.rgb(8, 17, 35)
+        window.statusBarColor = android.graphics.Color.rgb(14, 35, 64)
+        window.navigationBarColor = android.graphics.Color.rgb(10, 21, 38)
 
         val prefs = getSharedPreferences("sky_metar", MODE_PRIVATE)
         val saved = prefs.getString("lang", null)
@@ -71,11 +67,19 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private val Background = Color(0xFF081323)
-private val Panel = Color(0xFF13243A)
+// ---------------------------------------------------------------- design tokens
+private val Background = Color(0xFF060E1B)
+private val Panel = Color(0xFF0F1D31)
+private val PanelHi = Color(0xFF16273F)
+private val Line = Color(0xFF223652)
 private val Accent = Color(0xFF35B9E9)
+private val Accent2 = Color(0xFF4F8CFF)
 private val White = Color(0xFFF4F7FC)
-private val Muted = Color(0xFF9EADC0)
+private val Muted = Color(0xFF8FA0B6)
+private val Warn = Color(0xFFFFA726)
+private val Danger = Color(0xFFF44336)
+
+private fun accentBrush(): Brush = Brush.horizontalGradient(listOf(Accent, Accent2))
 
 private val mainHandler = Handler(Looper.getMainLooper())
 private var airportsCache: List<Airport>? = null
@@ -101,6 +105,7 @@ private fun tr(en: String, fr: String, ar: String): Map<Lang, String> =
 private val translations: Map<String, Map<Lang, String>> = mapOf(
     "subtitle" to tr("GLOBAL AVIATION WEATHER", "MÉTÉO AÉRONAUTIQUE MONDIALE", "الطقس الجوي العالمي"),
     "tab_clouds" to tr("CLOUDS", "NUAGES", "السحب"),
+    "tab_calc" to tr("TOOLS", "OUTILS", "الأدوات"),
     "metar_weather" to tr("METAR WEATHER", "MÉTÉO METAR", "طقس METAR"),
     "station_label" to tr("ICAO Station (e.g. GMMG)", "Station OACI (ex. GMMG)", "محطة ICAO (مثال GMMG)"),
     "btn_live" to tr("LIVE METAR + TAF", "METAR + TAF EN DIRECT", "METAR + TAF مباشر"),
@@ -159,23 +164,47 @@ private val translations: Map<String, Map<Lang, String>> = mapOf(
         "توقعات من نموذج رقمي (Open-Meteo) بتوقيت UTC. QNH ≈ الضغط عند مستوى البحر، وQFE محسوب من ارتفاع المطار (ISA). لا تعتمد عليها في تخطيط الرحلات."
     ),
 
-    // ---- calculator / converters tab
-    "tab_calc" to tr("CALC", "CALCUL", "الحاسبة"),
-    "calc_title" to tr("CALCULATOR & CONVERTERS", "CALCULATRICE ET CONVERTISSEURS", "الحاسبة والمحوّلات"),
-    "mode_calc" to tr("Calc", "Calcul", "حاسبة"),
+    // ---- tools tab
+    "calc_title" to tr("AVIATION TOOLS", "OUTILS AÉRO", "أدوات الطيران"),
     "calc_error" to tr("Error", "Erreur", "خطأ"),
-    "conv_hint" to tr(
-        "Type in any field, the others update instantly.",
-        "Saisissez dans un champ, les autres se mettent à jour.",
-        "اكتب في أي خانة وستتحدث الباقي مباشرة."
-    ),
+    "cat_dist" to tr("Distance", "Distance", "المسافة"),
+    "cat_speed" to tr("Speed", "Vitesse", "السرعة"),
+    "cat_temp" to tr("Temperature", "Température", "الحرارة"),
+    "cat_press" to tr("Pressure", "Pression", "الضغط"),
+    "cat_xwind" to tr("Crosswind", "Vent traversier", "الرياح الجانبية"),
+    "cat_calc" to tr("Calculator", "Calculatrice", "الحاسبة"),
+    "quick_title" to tr("QUICK CONVERT", "CONVERSION RAPIDE", "تحويل سريع"),
+    "conv_from" to tr("CONVERT FROM", "CONVERTIR DEPUIS", "التحويل من"),
+    "conv_to" to tr("RESULTS", "RÉSULTATS", "النتائج"),
     "u_ft" to tr("Feet (ft)", "Pieds (ft)", "قدم (ft)"),
+    "u_m" to tr("Meters (m)", "Mètres (m)", "متر (m)"),
     "u_km" to tr("Kilometers (km)", "Kilomètres (km)", "كيلومتر (km)"),
+    "u_nm" to tr("Nautical miles (NM)", "Milles nautiques (NM)", "ميل بحري (NM)"),
+    "u_mi" to tr("Miles (mi)", "Milles (mi)", "ميل (mi)"),
     "u_kt" to tr("Knots (kt)", "Nœuds (kt)", "عقدة (kt)"),
     "u_kmh" to tr("Kilometers/hour (km/h)", "Kilomètres/heure (km/h)", "كيلومتر/ساعة (km/h)"),
+    "u_ms" to tr("Meters/second (m/s)", "Mètres/seconde (m/s)", "متر/ثانية (m/s)"),
+    "u_mph" to tr("Miles/hour (mph)", "Miles/heure (mph)", "ميل/ساعة (mph)"),
     "u_c" to tr("Celsius (°C)", "Celsius (°C)", "سيلسيوس (°C)"),
     "u_f" to tr("Fahrenheit (°F)", "Fahrenheit (°F)", "فهرنهايت (°F)"),
-    "u_k" to tr("Kelvin (K)", "Kelvin (K)", "كلفن (K)")
+    "u_k" to tr("Kelvin (K)", "Kelvin (K)", "كلفن (K)"),
+    "u_hpa" to tr("Hectopascals (hPa)", "Hectopascals (hPa)", "هكتوباسكال (hPa)"),
+    "u_inhg" to tr("Inches of mercury (inHg)", "Pouces de mercure (inHg)", "بوصة زئبق (inHg)"),
+    "u_mmhg" to tr("Millimeters of mercury (mmHg)", "Millimètres de mercure (mmHg)", "ملم زئبق (mmHg)"),
+    "u_kpa" to tr("Kilopascals (kPa)", "Kilopascals (kPa)", "كيلوباسكال (kPa)"),
+    "xw_wdir" to tr("Wind direction (°)", "Direction du vent (°)", "اتجاه الرياح (°)"),
+    "xw_wspd" to tr("Wind speed (kt)", "Vitesse du vent (kt)", "سرعة الرياح (kt)"),
+    "xw_rwy" to tr("Runway (01–36)", "Piste (01–36)", "المدرج (01–36)"),
+    "xw_head" to tr("HEADWIND", "VENT DE FACE", "رياح أمامية"),
+    "xw_tail" to tr("TAILWIND", "VENT ARRIÈRE", "رياح خلفية"),
+    "xw_cross" to tr("CROSSWIND", "VENT TRAVERSIER", "رياح جانبية"),
+    "xw_left" to tr("from the left", "de gauche", "من اليسار"),
+    "xw_right" to tr("from the right", "de droite", "من اليمين"),
+    "xw_hint" to tr(
+        "Enter wind and runway to get the components.",
+        "Saisissez le vent et la piste pour obtenir les composantes.",
+        "أدخل الرياح والمدرج لحساب المركّبات."
+    )
 )
 
 @Composable
@@ -223,6 +252,150 @@ data class HourForecast(
     val qfe: Double?
 )
 
+// ================================================================ SHARED UI KIT
+
+@Composable
+private fun ProCard(
+    modifier: Modifier = Modifier,
+    borderColor: Color = Line,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val shape = RoundedCornerShape(18.dp)
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(Panel)
+            .border(1.dp, borderColor, shape)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        content()
+    }
+}
+
+@Composable
+private fun SectionTitle(text: String) {
+    val ls = if (LocalLang.current == Lang.AR) 0.sp else 1.sp
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Box(
+            Modifier
+                .width(4.dp)
+                .height(16.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(Accent)
+        )
+        Text(
+            text,
+            color = White,
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp,
+            letterSpacing = ls
+        )
+    }
+}
+
+@Composable
+private fun ProButton(
+    text: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    filled: Boolean = true,
+    onClick: () -> Unit
+) {
+    val shape = RoundedCornerShape(14.dp)
+    val base = modifier
+        .height(52.dp)
+        .clip(shape)
+    val styled = when {
+        !enabled -> base.background(Line)
+        filled -> base.background(accentBrush())
+        else -> base
+            .background(PanelHi)
+            .border(1.dp, Line, shape)
+    }
+    Box(
+        modifier = styled.clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text,
+            color = when {
+                !enabled -> Muted
+                filled -> Background
+                else -> White
+            },
+            fontWeight = FontWeight.Bold,
+            fontSize = 15.sp,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun proFieldColors() = OutlinedTextFieldDefaults.colors(
+    focusedTextColor = White,
+    unfocusedTextColor = White,
+    focusedContainerColor = PanelHi,
+    unfocusedContainerColor = PanelHi,
+    cursorColor = Accent,
+    focusedBorderColor = Accent,
+    unfocusedBorderColor = Line,
+    focusedLabelColor = Accent,
+    unfocusedLabelColor = Muted
+)
+
+@Composable
+private fun ProField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    singleLine: Boolean = true,
+    minLines: Int = 1,
+    ltr: Boolean = true,
+    fontSize: TextUnit = 16.sp,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    keyboardActions: KeyboardActions = KeyboardActions.Default,
+    trailingIcon: (@Composable () -> Unit)? = null
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        modifier = modifier.fillMaxWidth(),
+        singleLine = singleLine,
+        minLines = minLines,
+        shape = RoundedCornerShape(14.dp),
+        colors = proFieldColors(),
+        textStyle = LocalTextStyle.current.copy(
+            textDirection = if (ltr) TextDirection.Ltr else TextDirection.Content,
+            fontSize = fontSize
+        ),
+        keyboardOptions = keyboardOptions,
+        keyboardActions = keyboardActions,
+        trailingIcon = trailingIcon
+    )
+}
+
+@Composable
+private fun StatTile(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(PanelHi)
+            .padding(12.dp)
+    ) {
+        Text(label, color = Muted, fontSize = 11.sp)
+        Text(value, color = White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+// ================================================================ APP SHELL
+
 @Composable
 fun SkyMetarApp(initialLang: Lang = Lang.EN, onLangChange: (Lang) -> Unit = {}) {
     var selectedTab by remember { mutableStateOf("METAR") }
@@ -251,39 +424,41 @@ fun SkyMetarApp(initialLang: Lang = Lang.EN, onLangChange: (Lang) -> Unit = {}) 
                     onLangChange(it)
                 }
 
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    TabButton(
-                        text = "METAR & TAF",
-                        selected = selectedTab == "METAR",
-                        modifier = Modifier.weight(1f)
-                    ) { selectedTab = "METAR" }
-
-                    TabButton(
-                        text = "☁ " + t("tab_clouds"),
-                        selected = selectedTab == "CLOUDS",
-                        modifier = Modifier.weight(1f)
-                    ) { selectedTab = "CLOUDS" }
-
-                    TabButton(
-                        text = "🧮 " + t("tab_calc"),
-                        selected = selectedTab == "CALC",
-                        modifier = Modifier.weight(1f)
-                    ) { selectedTab = "CALC" }
+                Box(modifier = Modifier.weight(1f)) {
+                    when (selectedTab) {
+                        "METAR" -> MetarTafScreen(Modifier.fillMaxSize())
+                        "CLOUDS" -> CloudsScreen(Modifier.fillMaxSize())
+                        "CALC" -> CalculatorScreen(Modifier.fillMaxSize())
+                    }
                 }
 
-                when (selectedTab) {
-                    "METAR" -> MetarTafScreen(Modifier.weight(1f))
-                    "CLOUDS" -> CloudsScreen(Modifier.weight(1f))
-                    "CALC" -> CalculatorScreen(Modifier.weight(1f))
-                }
+                BottomBar(selectedTab) { selectedTab = it }
             }
         }
     }
+}
+
+private fun utcNow(): String =
+    SimpleDateFormat("HH:mm:ss", Locale.US).apply {
+        timeZone = TimeZone.getTimeZone("UTC")
+    }.format(Date()) + " Z"
+
+@Composable
+fun UtcClock() {
+    var now by remember { mutableStateOf(utcNow()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = utcNow()
+            delay(1000)
+        }
+    }
+    Text(
+        now,
+        color = Accent,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Bold,
+        fontFamily = FontFamily.Monospace
+    )
 }
 
 @Composable
@@ -293,92 +468,122 @@ fun Header(lang: Lang, onLangChange: (Lang) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFF0D1D32))
-            .padding(horizontal = 18.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .background(Brush.verticalGradient(listOf(Color(0xFF0E2340), Background)))
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Box(
+            modifier = Modifier
+                .size(42.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(accentBrush()),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("✈", fontSize = 22.sp, color = Background)
+        }
+
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = "SKY METAR GLOBAL",
-                fontSize = 22.sp,
+                fontSize = 17.sp,
                 fontWeight = FontWeight.Bold,
-                color = White
+                color = White,
+                maxLines = 1
             )
             Text(
                 text = t("subtitle"),
-                fontSize = 11.sp,
+                fontSize = 10.sp,
                 color = Accent,
+                maxLines = 1,
                 letterSpacing = when (lang) {
-                    Lang.EN -> 2.sp
-                    Lang.FR -> 1.sp
+                    Lang.EN -> 1.5.sp
+                    Lang.FR -> 0.8.sp
                     Lang.AR -> 0.sp   // letter spacing breaks Arabic letter joining
                 }
             )
         }
 
-        Box {
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Panel)
-                    .clickable { menuOpen = true }
-                    .padding(horizontal = 9.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Text("🌐", fontSize = 15.sp)
-                Text(
-                    lang.code.uppercase(Locale.US),
-                    color = White,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            DropdownMenu(
-                expanded = menuOpen,
-                onDismissRequest = { menuOpen = false }
-            ) {
-                Lang.values().forEach { l ->
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                l.label,
-                                fontWeight = if (l == lang) FontWeight.Bold else FontWeight.Normal,
-                                color = if (l == lang) Accent else White
-                            )
-                        },
-                        onClick = {
-                            onLangChange(l)
-                            menuOpen = false
-                        }
+        Column(
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Box {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(PanelHi)
+                        .border(1.dp, Line, RoundedCornerShape(10.dp))
+                        .clickable { menuOpen = true }
+                        .padding(horizontal = 9.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("🌐", fontSize = 14.sp)
+                    Text(
+                        lang.code.uppercase(Locale.US),
+                        color = White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
                     )
                 }
+
+                DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false }
+                ) {
+                    Lang.values().forEach { l ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    l.label,
+                                    fontWeight = if (l == lang) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (l == lang) Accent else White
+                                )
+                            },
+                            onClick = {
+                                onLangChange(l)
+                                menuOpen = false
+                            }
+                        )
+                    }
+                }
             }
+            UtcClock()
         }
     }
 }
 
 @Composable
-fun TabButton(
-    text: String,
-    selected: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    Button(
-        onClick = onClick,
-        modifier = modifier.height(48.dp),
-        shape = RoundedCornerShape(12.dp),
-        contentPadding = PaddingValues(horizontal = 4.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = if (selected) Accent else Panel,
-            contentColor = if (selected) Background else White
-        )
+private fun BottomBar(selected: String, onSelect: (String) -> Unit) {
+    val items = listOf(
+        Triple("METAR", "📡", "METAR & TAF"),
+        Triple("CLOUDS", "☁", t("tab_clouds")),
+        Triple("CALC", "🧮", t("tab_calc"))
+    )
+    NavigationBar(
+        containerColor = Color(0xFF0A1526),
+        tonalElevation = 0.dp
     ) {
-        Text(text, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
+        items.forEach { (id, icon, label) ->
+            NavigationBarItem(
+                selected = selected == id,
+                onClick = { onSelect(id) },
+                icon = { Text(icon, fontSize = 22.sp) },
+                label = {
+                    Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                },
+                colors = NavigationBarItemDefaults.colors(
+                    selectedTextColor = Accent,
+                    unselectedTextColor = Muted,
+                    indicatorColor = Accent.copy(alpha = 0.18f)
+                )
+            )
+        }
     }
 }
+
+// ================================================================ METAR / TAF TAB
 
 @Composable
 fun MetarTafScreen(modifier: Modifier = Modifier) {
@@ -396,45 +601,42 @@ fun MetarTafScreen(modifier: Modifier = Modifier) {
         modifier = modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text(t("metar_weather"), color = Accent, fontWeight = FontWeight.Bold)
+        ProCard {
+            SectionTitle(t("metar_weather"))
 
-        OutlinedTextField(
-            value = station,
-            onValueChange = { station = it.uppercase(Locale.US) },
-            label = { Text(t("station_label")) },
-            textStyle = LocalTextStyle.current.copy(textDirection = TextDirection.Ltr),
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true
-        )
+            ProField(
+                value = station,
+                onValueChange = { station = it.uppercase(Locale.US) },
+                label = t("station_label")
+            )
 
-        Button(
-            onClick = {
+            ProButton(
+                text = if (loading) t("btn_loading") else t("btn_live"),
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !loading
+            ) {
                 val id = station.trim()
                 if (id.length != 4) {
                     message = "err_station"
-                    return@Button
+                } else {
+                    loading = true
+                    message = "msg_searching"
+                    fetchWeather(id) { metar, taf, error ->
+                        liveMetar = metar
+                        liveTaf = taf
+                        liveResult = if (metar.isNotBlank()) parseMetar(metar) else null
+                        message = error
+                        loading = false
+                    }
                 }
-                loading = true
-                message = "msg_searching"
-                fetchWeather(id) { metar, taf, error ->
-                    liveMetar = metar
-                    liveTaf = taf
-                    liveResult = if (metar.isNotBlank()) parseMetar(metar) else null
-                    message = error
-                    loading = false
-                }
-            },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !loading
-        ) {
-            Text(if (loading) t("btn_loading") else t("btn_live"))
-        }
+            }
 
-        if (message.isNotBlank()) {
-            Text(errText(message), color = Muted)
+            if (message.isNotBlank()) {
+                Text(errText(message), color = Muted, fontSize = 13.sp)
+            }
         }
 
         if (liveMetar.isNotBlank()) {
@@ -443,101 +645,110 @@ fun MetarTafScreen(modifier: Modifier = Modifier) {
 
         liveResult?.let { CategoryCard(it) }
 
-        HorizontalDivider(color = Muted.copy(alpha = 0.3f))
+        ProCard {
+            SectionTitle(t("manual_metar"))
 
-        Text(t("manual_metar"), color = Accent, fontWeight = FontWeight.Bold)
+            ProField(
+                value = manualMetar,
+                onValueChange = { manualMetar = it },
+                label = t("paste_metar"),
+                singleLine = false,
+                minLines = 3
+            )
 
-        OutlinedTextField(
-            value = manualMetar,
-            onValueChange = { manualMetar = it },
-            label = { Text(t("paste_metar")) },
-            textStyle = LocalTextStyle.current.copy(textDirection = TextDirection.Ltr),
-            modifier = Modifier.fillMaxWidth(),
-            minLines = 3
-        )
-
-        Button(
-            onClick = {
+            ProButton(t("btn_analyze"), Modifier.fillMaxWidth(), filled = false) {
                 manualResult = if (manualMetar.isNotBlank()) parseMetar(manualMetar) else null
-            },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(t("btn_analyze"))
+            }
         }
 
         manualResult?.let { CategoryCard(it) }
 
-        HorizontalDivider(color = Muted.copy(alpha = 0.3f))
-
-        Text(t("live_taf"), color = Accent, fontWeight = FontWeight.Bold)
-
         if (liveTaf.isNotBlank()) {
             WeatherCard(t("taf_forecast"), liveTaf)
         } else {
-            Text(t("taf_hint"), color = Muted)
+            ProCard {
+                SectionTitle(t("live_taf"))
+                Text(t("taf_hint"), color = Muted, fontSize = 13.sp)
+            }
         }
 
-        Text(t("manual_taf"), color = Accent, fontWeight = FontWeight.Bold)
+        ProCard {
+            SectionTitle(t("manual_taf"))
 
-        OutlinedTextField(
-            value = manualTaf,
-            onValueChange = { manualTaf = it },
-            label = { Text(t("paste_taf")) },
-            textStyle = LocalTextStyle.current.copy(textDirection = TextDirection.Ltr),
-            modifier = Modifier.fillMaxWidth(),
-            minLines = 4
-        )
+            ProField(
+                value = manualTaf,
+                onValueChange = { manualTaf = it },
+                label = t("paste_taf"),
+                singleLine = false,
+                minLines = 4
+            )
 
-        Button(
-            onClick = { liveTaf = manualTaf },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(t("btn_display_taf"))
-        }
-    }
-}
-
-@Composable
-fun WeatherCard(title: String, value: String) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Panel),
-        shape = RoundedCornerShape(14.dp)
-    ) {
-        Column(Modifier.padding(14.dp)) {
-            Text(title, color = Accent, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            // raw METAR / TAF is always left-to-right Latin text
-            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-                Text(value, color = White, fontSize = 14.sp, modifier = Modifier.fillMaxWidth())
+            ProButton(t("btn_display_taf"), Modifier.fillMaxWidth(), filled = false) {
+                liveTaf = manualTaf
             }
         }
     }
 }
 
 @Composable
-fun CategoryCard(result: MetarResult) {
-    val visText = result.visibility?.let { String.format(Locale.US, "%.1f", it) } ?: t("unknown")
-    val ceilText = result.ceiling?.let { "$it ${t("ft")}" } ?: t("none")
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = result.color),
-        shape = RoundedCornerShape(14.dp)
-    ) {
-        Column(Modifier.padding(16.dp)) {
+fun WeatherCard(title: String, value: String) {
+    ProCard {
+        SectionTitle(title)
+        // raw METAR / TAF is always left-to-right Latin text
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
             Text(
-                result.category,
-                color = Color.Black,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold
+                value,
+                color = White,
+                fontSize = 14.sp,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.fillMaxWidth()
             )
-            Text("${t("cat_station")}: ${result.station}", color = Color.Black)
-            Text("${t("cat_visibility")}: $visText ${t("km")}", color = Color.Black)
-            Text("${t("cat_ceiling")}: $ceilText", color = Color.Black)
         }
     }
 }
+
+@Composable
+fun CategoryCard(result: MetarResult) {
+    val visText = result.visibility?.let { String.format(Locale.US, "%.1f", it) + " " + t("km") }
+        ?: t("unknown")
+    val ceilText = result.ceiling?.let { "$it ${t("ft")}" } ?: t("none")
+
+    ProCard(borderColor = result.color.copy(alpha = 0.7f)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(result.color)
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Text(
+                    result.category,
+                    color = Color.Black,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            Text(
+                result.station,
+                color = White,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            StatTile(t("cat_visibility"), visText, Modifier.weight(1f))
+            StatTile(t("cat_ceiling"), ceilText, Modifier.weight(1f))
+        }
+    }
+}
+
+// ================================================================ CLOUDS TAB
 
 @Composable
 fun CloudsScreen(modifier: Modifier = Modifier) {
@@ -579,63 +790,43 @@ fun CloudsScreen(modifier: Modifier = Modifier) {
         state = listState,
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 14.dp),
-        contentPadding = PaddingValues(vertical = 14.dp),
+            .padding(horizontal = 16.dp),
+        contentPadding = PaddingValues(vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            Text(
-                "☁ " + t("clouds_title"),
-                color = Accent,
-                fontWeight = FontWeight.Bold,
-                fontSize = 19.sp
-            )
-        }
+            ProCard {
+                SectionTitle("☁ " + t("clouds_title"))
 
-        item {
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                label = { Text(t("search_field")) },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { appliedQuery = query.trim() })
-            )
-        }
+                ProField(
+                    value = query,
+                    onValueChange = { query = it },
+                    label = t("search_field"),
+                    ltr = false,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { appliedQuery = query.trim() })
+                )
 
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(
-                    onClick = { appliedQuery = query.trim() },
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp),
-                    shape = RoundedCornerShape(12.dp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("🔍 " + t("btn_search"), fontWeight = FontWeight.Bold)
-                }
+                    ProButton("🔍 " + t("btn_search"), Modifier.weight(1f)) {
+                        appliedQuery = query.trim()
+                    }
 
-                if (appliedQuery.isNotEmpty() || query.isNotEmpty()) {
-                    OutlinedButton(
-                        onClick = {
+                    if (appliedQuery.isNotEmpty() || query.isNotEmpty()) {
+                        ProButton("✕", Modifier.width(56.dp), filled = false) {
                             query = ""
                             appliedQuery = ""
-                        },
-                        modifier = Modifier.height(48.dp),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text("✕")
+                        }
                     }
                 }
             }
         }
 
         if (message.isNotBlank()) {
-            item { Text(errText(message), color = Muted) }
+            item { Text(errText(message), color = Muted, fontSize = 13.sp) }
         }
 
         if (listLoading || loading) {
@@ -644,41 +835,50 @@ fun CloudsScreen(modifier: Modifier = Modifier) {
 
         selectedAirport?.let { airport ->
             item {
-                Column {
-                    Text(
-                        "${t("selected")}: ${airport.name} (${airport.icao})",
-                        color = Accent,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        "${t("elevation")}: ${airport.elevFt} ${t("ft")}",
-                        color = Muted,
-                        fontSize = 12.sp
-                    )
+                ProCard(borderColor = Accent.copy(alpha = 0.6f)) {
+                    Text(t("selected"), color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                airport.name,
+                                color = White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp
+                            )
+                            Text(
+                                "${t("elevation")}: ${airport.elevFt} ${t("ft")}",
+                                color = Muted,
+                                fontSize = 12.sp
+                            )
+                        }
+                        Text(
+                            airport.icao,
+                            color = Accent,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 22.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
                 }
             }
         }
 
         if (forecast.isNotEmpty()) {
-            item {
-                Text(t("forecast_title"), color = Accent, fontWeight = FontWeight.Bold)
-            }
+            item { SectionTitle(t("forecast_title")) }
             items(forecast) { ForecastCard(it) }
             item { Text(t("forecast_note"), color = Muted, fontSize = 11.sp) }
         }
 
-        item {
-            Text(
-                "${t("all_codes")} (${filtered.size})",
-                color = Accent,
-                fontWeight = FontWeight.Bold
-            )
-        }
+        item { SectionTitle("${t("all_codes")} (${filtered.size})") }
 
         items(filtered, key = { it.icao }) { airport ->
-            Card(
+            val shape = RoundedCornerShape(14.dp)
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clip(shape)
+                    .background(Panel)
+                    .border(1.dp, Line, shape)
                     .clickable {
                         selectedAirport = airport
                         forecast = emptyList()
@@ -690,21 +890,28 @@ fun CloudsScreen(modifier: Modifier = Modifier) {
                             message = error
                             loading = false
                         }
-                    },
-                colors = CardDefaults.cardColors(containerColor = Panel)
+                    }
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Accent.copy(alpha = 0.15f))
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
                 ) {
-                    Text("☁", color = Accent, fontSize = 22.sp)
-                    Column {
-                        Text(airport.icao, color = Accent, fontWeight = FontWeight.Bold)
-                        Text(airport.name, color = White)
-                        if (airport.city.isNotBlank()) {
-                            Text(airport.city, color = Muted, fontSize = 12.sp)
-                        }
+                    Text(
+                        airport.icao,
+                        color = Accent,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+                Column {
+                    Text(airport.name, color = White, fontSize = 14.sp, maxLines = 1)
+                    if (airport.city.isNotBlank()) {
+                        Text(airport.city, color = Muted, fontSize = 12.sp)
                     }
                 }
             }
@@ -742,12 +949,13 @@ fun PercentBar(label: String, pct: Double, color: Color) {
                 .weight(1f)
                 .height(8.dp)
                 .clip(RoundedCornerShape(4.dp))
-                .background(Muted.copy(alpha = 0.2f))
+                .background(Line)
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth((pct / 100.0).toFloat().coerceIn(0f, 1f))
                     .fillMaxHeight()
+                    .clip(RoundedCornerShape(4.dp))
                     .background(color)
             )
         }
@@ -793,47 +1001,47 @@ fun ForecastCard(h: HourForecast) {
     val qnhText = h.qnh?.let { String.format(Locale.US, "%.1f hPa", it) } ?: dash
     val qfeText = h.qfe?.let { String.format(Locale.US, "%.1f hPa", it) } ?: dash
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Panel),
-        shape = RoundedCornerShape(14.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+    ProCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                h.time,
+                color = White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
+                modifier = Modifier.weight(1f)
+            )
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(cloudCatColor(cat))
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            ) {
                 Text(
-                    h.time,
-                    color = White,
+                    "$cat $oktas/8",
+                    color = Color.Black,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp,
-                    modifier = Modifier.weight(1f)
+                    fontSize = 12.sp
                 )
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(cloudCatColor(cat))
-                        .padding(horizontal = 10.dp, vertical = 4.dp)
-                ) {
-                    Text(
-                        "$cat $oktas/8",
-                        color = Color.Black,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
-                    )
-                }
             }
+        }
 
-            PercentBar(t("cloud_cover"), h.cloud, cloudCatColor(cat))
-            PercentBar(t("low"), h.low, Color(0xFF6FB7DF))
-            PercentBar(t("mid"), h.mid, Color(0xFF9CCDEB))
-            PercentBar(t("high"), h.high, Color(0xFFCFE3F3))
+        PercentBar(t("cloud_cover"), h.cloud, cloudCatColor(cat))
+        PercentBar(t("low"), h.low, Color(0xFF6FB7DF))
+        PercentBar(t("mid"), h.mid, Color(0xFF9CCDEB))
+        PercentBar(t("high"), h.high, Color(0xFFCFE3F3))
 
-            HorizontalDivider(color = Muted.copy(alpha = 0.3f))
-
-            Row(modifier = Modifier.fillMaxWidth()) {
-                InfoCell(t("wind"), windText, Modifier.weight(1f)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(PanelHi)
+                    .padding(12.dp)
+            ) {
+                InfoCell(t("wind"), windText) {
                     val dir = h.windDir
                     if (dir != null) {
                         Box(modifier = Modifier.size(28.dp), contentAlignment = Alignment.Center) {
@@ -848,25 +1056,49 @@ fun ForecastCard(h: HourForecast) {
                         }
                     }
                 }
-                InfoCell(t("humidity"), humText, Modifier.weight(1f))
             }
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(PanelHi)
+                    .padding(12.dp)
+            ) {
+                InfoCell(t("humidity"), humText)
+            }
+        }
 
-            Row(modifier = Modifier.fillMaxWidth()) {
-                InfoCell("QNH", qnhText, Modifier.weight(1f))
-                InfoCell("QFE", qfeText, Modifier.weight(1f))
-            }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            StatTile("QNH", qnhText, Modifier.weight(1f))
+            StatTile("QFE", qfeText, Modifier.weight(1f))
         }
     }
 }
 
-// ================================================================ CALCULATOR & CONVERTERS TAB
+// ================================================================ TOOLS TAB (converters, crosswind, calculator)
 
 // ---------------------------------------------------------------- helpers
-/** Rounds to 8 decimals and strips trailing zeros. Returns null for NaN / Infinity. */
-private fun calcFmt(d: Double): String? {
+private fun calcFmtScale(d: Double, scale: Int): String? {
     if (!d.isFinite()) return null
-    val s = BigDecimal(d).setScale(8, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
+    val s = BigDecimal(d).setScale(scale, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
     return if (s == "-0") "0" else s
+}
+
+/** Calculator formatting: up to 8 decimals, no trailing zeros. */
+private fun calcFmt(d: Double): String? = calcFmtScale(d, 8)
+
+/** Converter formatting: fewer decimals for big numbers, more for tiny ones. */
+private fun calcConvFmt(d: Double): String? {
+    val a = abs(d)
+    val scale = when {
+        a >= 1000 -> 3
+        a >= 1 -> 4
+        else -> 8
+    }
+    return calcFmtScale(d, scale)
 }
 
 private fun calcSanitize(raw: String, allowNegative: Boolean): String {
@@ -952,53 +1184,62 @@ private fun calcEval(s: String): Double? {
 
 // ---------------------------------------------------------------- units
 private class CalcUnit(
+    val symbol: String,
     val key: String,
     val toBase: (Double) -> Double,
     val fromBase: (Double) -> Double
 )
 
-// base = km
+// base = meters
 private val distUnits = listOf(
-    CalcUnit("u_ft", { it * 0.0003048 }, { it / 0.0003048 }),
-    CalcUnit("u_km", { it }, { it })
+    CalcUnit("km", "u_km", { it * 1000.0 }, { it / 1000.0 }),
+    CalcUnit("m", "u_m", { it }, { it }),
+    CalcUnit("ft", "u_ft", { it * 0.3048 }, { it / 0.3048 }),
+    CalcUnit("NM", "u_nm", { it * 1852.0 }, { it / 1852.0 }),
+    CalcUnit("mi", "u_mi", { it * 1609.344 }, { it / 1609.344 })
 )
 
 // base = km/h
 private val speedUnits = listOf(
-    CalcUnit("u_kt", { it * 1.852 }, { it / 1.852 }),
-    CalcUnit("u_kmh", { it }, { it })
+    CalcUnit("km/h", "u_kmh", { it }, { it }),
+    CalcUnit("m/s", "u_ms", { it * 3.6 }, { it / 3.6 }),
+    CalcUnit("kt", "u_kt", { it * 1.852 }, { it / 1.852 }),
+    CalcUnit("mph", "u_mph", { it * 1.609344 }, { it / 1.609344 })
 )
 
 // base = °C
 private val tempUnits = listOf(
-    CalcUnit("u_c", { it }, { it }),
-    CalcUnit("u_f", { (it - 32.0) * 5.0 / 9.0 }, { it * 9.0 / 5.0 + 32.0 }),
-    CalcUnit("u_k", { it - 273.15 }, { it + 273.15 })
+    CalcUnit("°C", "u_c", { it }, { it }),
+    CalcUnit("°F", "u_f", { (it - 32.0) * 5.0 / 9.0 }, { it * 9.0 / 5.0 + 32.0 }),
+    CalcUnit("K", "u_k", { it - 273.15 }, { it + 273.15 })
 )
 
-private enum class CalcMode { DIST, SPEED, TEMP, CALC }
+// base = hPa
+private val pressUnits = listOf(
+    CalcUnit("hPa", "u_hpa", { it }, { it }),
+    CalcUnit("inHg", "u_inhg", { it * 33.8638866667 }, { it / 33.8638866667 }),
+    CalcUnit("mmHg", "u_mmhg", { it * 1.33322387415 }, { it / 1.33322387415 }),
+    CalcUnit("kPa", "u_kpa", { it * 10.0 }, { it / 10.0 })
+)
 
-private val cKey = Color(0xFF1E3552)
-private val cError = Color(0xFFF44336)
+private enum class ToolCat { DIST, SPEED, TEMP, PRESS, XWIND, CALC }
 
 // ---------------------------------------------------------------- screen
 @Composable
 fun CalculatorScreen(modifier: Modifier = Modifier) {
-    var mode by remember { mutableStateOf(CalcMode.DIST) }
+    var cat by remember { mutableStateOf(ToolCat.DIST) }
 
     Column(
         modifier = modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text(
-            "🧮 " + t("calc_title"),
-            color = Accent,
-            fontWeight = FontWeight.Bold,
-            fontSize = 19.sp
-        )
+        SectionTitle(t("calc_title"))
+
+        // quick convert (km ⇄ m and km/h ⇄ m/s) always visible at the top
+        QuickConvertCard()
 
         Row(
             modifier = Modifier
@@ -1006,27 +1247,31 @@ fun CalculatorScreen(modifier: Modifier = Modifier) {
                 .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            CalcMode.values().forEach { m ->
-                val label = when (m) {
-                    CalcMode.DIST -> "ft ↔ km"
-                    CalcMode.SPEED -> "kt ↔ km/h"
-                    CalcMode.TEMP -> "°C ↔ °F"
-                    CalcMode.CALC -> "🧮 " + t("mode_calc")
+            ToolCat.values().forEach { c ->
+                val label = when (c) {
+                    ToolCat.DIST -> "📏 " + t("cat_dist")
+                    ToolCat.SPEED -> "💨 " + t("cat_speed")
+                    ToolCat.TEMP -> "🌡 " + t("cat_temp")
+                    ToolCat.PRESS -> "⏲ " + t("cat_press")
+                    ToolCat.XWIND -> "🧭 " + t("cat_xwind")
+                    ToolCat.CALC -> "🧮 " + t("cat_calc")
                 }
-                ModeChip(label, mode == m) { mode = m }
+                CategoryChip(label, cat == c) { cat = c }
             }
         }
 
-        when (mode) {
-            CalcMode.DIST -> ConverterPanel(distUnits, "1 ft = 0.0003048 km   ·   1 km ≈ 3280.84 ft")
-            CalcMode.SPEED -> ConverterPanel(speedUnits, "1 kt = 1.852 km/h")
-            CalcMode.TEMP -> ConverterPanel(
+        when (cat) {
+            ToolCat.DIST -> ConverterPanel(distUnits, "1 NM = 1852 m   ·   1 ft = 0.3048 m")
+            ToolCat.SPEED -> ConverterPanel(speedUnits, "1 kt = 1.852 km/h   ·   1 m/s = 3.6 km/h")
+            ToolCat.TEMP -> ConverterPanel(
                 tempUnits,
                 "°F = °C × 9/5 + 32   ·   K = °C + 273.15",
                 allowNegative = true
             )
+            ToolCat.PRESS -> ConverterPanel(pressUnits, "1013.25 hPa = 29.92 inHg (ISA)")
+            ToolCat.XWIND -> CrosswindPanel()
             // keypad must never be mirrored in Arabic
-            CalcMode.CALC -> CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+            ToolCat.CALC -> CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                 BasicCalculator()
             }
         }
@@ -1034,13 +1279,15 @@ fun CalculatorScreen(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ModeChip(text: String, selected: Boolean, onClick: () -> Unit) {
+private fun CategoryChip(text: String, selected: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(12.dp)
     Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (selected) Accent else Panel)
+            .clip(shape)
+            .background(if (selected) Accent else PanelHi)
+            .border(1.dp, if (selected) Accent else Line, shape)
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            .padding(horizontal = 14.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
@@ -1048,8 +1295,86 @@ private fun ModeChip(text: String, selected: Boolean, onClick: () -> Unit) {
             color = if (selected) Background else White,
             fontWeight = FontWeight.Bold,
             fontSize = 14.sp,
-            maxLines = 1,
-            style = LocalTextStyle.current.copy(textDirection = TextDirection.Ltr)
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun UnitChip(text: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) accentBrush() else Brush.horizontalGradient(listOf(PanelHi, PanelHi)))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text,
+            color = if (selected) Background else White,
+            fontWeight = FontWeight.Bold,
+            fontSize = 14.sp,
+            maxLines = 1
+        )
+    }
+}
+
+// ---------------------------------------------------------------- quick convert (km ⇄ m / km/h ⇄ m/s)
+@Composable
+private fun QuickConvertCard() {
+    var isSpeed by remember { mutableStateOf(false) }   // false: km ⇄ m · true: km/h ⇄ m/s
+    var swapped by remember { mutableStateOf(false) }   // ⇄ reverses the conversion direction
+    var input by remember { mutableStateOf("") }
+    val value = input.toDoubleOrNull()
+
+    val srcSymbol = if (isSpeed) (if (swapped) "m/s" else "km/h") else (if (swapped) "m" else "km")
+    val dstSymbol = if (isSpeed) (if (swapped) "km/h" else "m/s") else (if (swapped) "km" else "m")
+    val units = if (isSpeed) speedUnits else distUnits
+    val src = units.first { it.symbol == srcSymbol }
+    val dst = units.first { it.symbol == dstSymbol }
+
+    val out = value?.let { calcConvFmt(dst.fromBase(src.toBase(it))) }
+
+    ProCard(borderColor = Accent.copy(alpha = 0.5f)) {
+        SectionTitle("⚡ " + t("quick_title"))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            UnitChip(t("cat_dist"), !isSpeed) { isSpeed = false }
+            UnitChip(t("cat_speed"), isSpeed) { isSpeed = true }
+            Spacer(Modifier.weight(1f))
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(PanelHi)
+                    .border(1.dp, Line, RoundedCornerShape(10.dp))
+                    .clickable { swapped = !swapped },
+                contentAlignment = Alignment.Center
+            ) {
+                Text("⇄", color = Accent, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        ProField(
+            value = input,
+            onValueChange = { input = calcSanitize(it, false) },
+            label = t(src.key),
+            fontSize = 28.sp,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+        )
+
+        ResultRow(t(dst.key), dst.symbol, out)
+
+        Text(
+            if (isSpeed) "1 km/h = 0.2778 m/s   ·   1 m/s = 3.6 km/h"
+            else "1 km = 1000 m   ·   1 m = 0.001 km",
+            color = Muted,
+            fontSize = 12.sp
         )
     }
 }
@@ -1057,57 +1382,187 @@ private fun ModeChip(text: String, selected: Boolean, onClick: () -> Unit) {
 // ---------------------------------------------------------------- converters
 @Composable
 private fun ConverterPanel(units: List<CalcUnit>, note: String, allowNegative: Boolean = false) {
-    val texts = remember(units) {
-        mutableStateListOf<String>().apply { repeat(units.size) { add("") } }
+    var fromIdx by remember(units) { mutableStateOf(0) }
+    var input by remember(units) { mutableStateOf("") }
+    val value = input.toDoubleOrNull()
+
+    ProCard {
+        Text(t("conv_from"), color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            units.forEachIndexed { i, u ->
+                UnitChip(u.symbol, i == fromIdx) { fromIdx = i }
+            }
+        }
+
+        val trailing: (@Composable () -> Unit)? = if (allowNegative) {
+            @Composable {
+                TextButton(onClick = {
+                    input = if (input.startsWith("-")) input.drop(1) else "-$input"
+                }) {
+                    Text("±", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Accent)
+                }
+            }
+        } else null
+
+        ProField(
+            value = input,
+            onValueChange = { input = calcSanitize(it, allowNegative) },
+            label = t(units[fromIdx].key),
+            fontSize = 28.sp,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            trailingIcon = trailing
+        )
     }
 
-    fun edit(i: Int, raw: String) {
-        texts[i] = calcSanitize(raw, allowNegative)
-        val v = texts[i].toDoubleOrNull()
-        for (j in units.indices) {
-            if (j == i) continue
-            texts[j] = if (v == null) "" else (calcFmt(units[j].fromBase(units[i].toBase(v))) ?: "")
+    SectionTitle(t("conv_to"))
+
+    units.forEachIndexed { j, u ->
+        if (j != fromIdx) {
+            val out = value?.let { calcConvFmt(u.fromBase(units[fromIdx].toBase(it))) }
+            ResultRow(t(u.key), u.symbol, out)
         }
     }
 
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(t("conv_hint"), color = Muted, fontSize = 13.sp)
+    Text(note, color = Muted, fontSize = 12.sp)
+}
 
-        units.forEachIndexed { i, u ->
-            val trailing: (@Composable () -> Unit)? = if (allowNegative) {
-                @Composable {
-                    TextButton(onClick = {
-                        val cur = texts[i]
-                        edit(i, if (cur.startsWith("-")) cur.drop(1) else "-$cur")
-                    }) {
-                        Text("±", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-            } else null
-
-            OutlinedTextField(
-                value = texts[i],
-                onValueChange = { edit(i, it) },
-                label = { Text(t(u.key)) },
-                textStyle = LocalTextStyle.current.copy(
-                    textDirection = TextDirection.Ltr,
-                    fontSize = 20.sp
-                ),
-                trailingIcon = trailing,
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                modifier = Modifier.fillMaxWidth()
+@Composable
+private fun ResultRow(name: String, symbol: String, value: String?) {
+    val shape = RoundedCornerShape(16.dp)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(Panel)
+            .border(1.dp, Line, shape)
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(name, color = Muted, fontSize = 12.sp)
+            Text(
+                text = value ?: "—",
+                color = if (value != null) White else Muted,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                style = LocalTextStyle.current.copy(textDirection = TextDirection.Ltr)
             )
         }
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(Accent.copy(alpha = 0.15f))
+                .padding(horizontal = 10.dp, vertical = 6.dp)
+        ) {
+            Text(symbol, color = Accent, fontWeight = FontWeight.Bold)
+        }
+    }
+}
 
-        Text(note, color = Muted, fontSize = 12.sp)
+// ---------------------------------------------------------------- crosswind
+@Composable
+private fun CrosswindPanel() {
+    var wdir by remember { mutableStateOf("") }
+    var wspd by remember { mutableStateOf("") }
+    var rwy by remember { mutableStateOf("") }
+
+    val dir = wdir.toIntOrNull()
+    val spd = wspd.toDoubleOrNull()
+    val rw = rwy.toIntOrNull()
+
+    ProCard {
+        ProField(
+            value = wdir,
+            onValueChange = { wdir = it.filter { c -> c in '0'..'9' }.take(3) },
+            label = t("xw_wdir"),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
+        ProField(
+            value = wspd,
+            onValueChange = { wspd = calcSanitize(it, false) },
+            label = t("xw_wspd"),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+        )
+        ProField(
+            value = rwy,
+            onValueChange = { rwy = it.filter { c -> c in '0'..'9' }.take(2) },
+            label = t("xw_rwy"),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
+    }
+
+    if (dir != null && dir in 0..360 && spd != null && rw != null && rw in 1..36) {
+        val rad = Math.toRadians(dir - rw * 10.0)
+        val head = spd * cos(rad)
+        val cross = spd * sin(rad)
+        val headR = head.roundToInt()
+        val crossR = cross.roundToInt()
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            BigTile(
+                label = if (headR >= 0) t("xw_head") else t("xw_tail"),
+                value = "${abs(headR)} ${t("kt")}",
+                sub = "",
+                valueColor = if (headR >= 0) Accent else Warn,
+                modifier = Modifier.weight(1f)
+            )
+            BigTile(
+                label = t("xw_cross"),
+                value = "${abs(crossR)} ${t("kt")}",
+                sub = when {
+                    crossR > 0 -> t("xw_right")
+                    crossR < 0 -> t("xw_left")
+                    else -> ""
+                },
+                valueColor = Accent,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    } else {
+        Text(t("xw_hint"), color = Muted, fontSize = 13.sp)
+    }
+}
+
+@Composable
+private fun BigTile(
+    label: String,
+    value: String,
+    sub: String,
+    valueColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(16.dp)
+    Column(
+        modifier
+            .clip(shape)
+            .background(Panel)
+            .border(1.dp, Line, shape)
+            .padding(16.dp)
+    ) {
+        Text(label, color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        Text(value, color = valueColor, fontSize = 30.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        Text(if (sub.isBlank()) " " else sub, color = Muted, fontSize = 12.sp)
     }
 }
 
 // ---------------------------------------------------------------- basic calculator
+private enum class KeyStyle { DIGIT, FN, OP, EQ }
+
 @Composable
 private fun BasicCalculator() {
     var expr by remember { mutableStateOf("") }
+    var history by remember { mutableStateOf("") }
     var justEvaluated by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf(false) }
     val ops = "+−×÷"
@@ -1119,6 +1574,7 @@ private fun BasicCalculator() {
         when {
             key == "C" -> {
                 expr = ""
+                history = ""
                 justEvaluated = false
             }
             key == "⌫" -> {
@@ -1129,6 +1585,7 @@ private fun BasicCalculator() {
                 val clean = expr.trimEnd('+', '−', '×', '÷')
                 val r = calcEval(clean)?.let { calcFmt(it) }
                 if (r != null) {
+                    history = "$clean ="
                     expr = r.replace('-', '−')
                     justEvaluated = true
                 } else if (expr.isNotEmpty()) {
@@ -1178,33 +1635,44 @@ private fun BasicCalculator() {
     val preview = if (justEvaluated) null
     else calcEval(expr.trimEnd('+', '−', '×', '÷'))?.let { calcFmt(it) }?.takeIf { it != expr }
 
+    val smallLine = when {
+        justEvaluated -> history
+        preview != null -> expr
+        else -> ""
+    }
+    val bigLine = when {
+        error -> t("calc_error")
+        preview != null -> preview.replace('-', '−')
+        expr.isEmpty() -> "0"
+        else -> expr
+    }
+
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         // display
+        val displayShape = RoundedCornerShape(20.dp)
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
-                .background(Panel)
-                .padding(16.dp),
-            horizontalAlignment = Alignment.End
+                .clip(displayShape)
+                .background(Brush.verticalGradient(listOf(Color(0xFF12304F), Panel)))
+                .border(1.dp, Line, displayShape)
+                .padding(horizontal = 18.dp, vertical = 20.dp),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Text(
-                text = when {
-                    error -> t("calc_error")
-                    expr.isEmpty() -> "0"
-                    else -> expr
-                },
-                color = if (error) cError else White,
-                fontSize = if (expr.length > 12) 26.sp else 38.sp,
-                fontWeight = FontWeight.Bold,
+                text = if (smallLine.isBlank()) " " else smallLine,
+                color = Muted,
+                fontSize = 20.sp,
                 textAlign = TextAlign.End,
-                maxLines = 2,
+                maxLines = 1,
                 modifier = Modifier.fillMaxWidth()
             )
             Text(
-                text = preview?.replace('-', '−') ?: " ",
-                color = Muted,
-                fontSize = 18.sp,
+                text = bigLine,
+                color = if (error) Danger else White,
+                fontSize = if (bigLine.length > 12) 32.sp else 48.sp,
+                fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.End,
                 maxLines = 1,
                 modifier = Modifier.fillMaxWidth()
@@ -1221,25 +1689,19 @@ private fun BasicCalculator() {
         rows.forEach { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 row.forEach { k ->
-                    val isOp = k in listOf("÷", "×", "−", "+")
-                    val isFn = k in listOf("C", "⌫", "%")
-                    CalcKey(
-                        label = k,
-                        modifier = Modifier.weight(1f),
-                        bg = when {
-                            isOp -> Accent
-                            isFn -> cKey
-                            else -> Panel
-                        },
-                        fg = if (isOp) Background else White
-                    ) { press(k) }
+                    val style = when (k) {
+                        "÷", "×", "−", "+" -> KeyStyle.OP
+                        "C", "⌫", "%" -> KeyStyle.FN
+                        else -> KeyStyle.DIGIT
+                    }
+                    CalcKey(k, Modifier.weight(1f), style) { press(k) }
                 }
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            CalcKey("0", Modifier.weight(2f), Panel, White) { press("0") }
-            CalcKey(".", Modifier.weight(1f), Panel, White) { press(".") }
-            CalcKey("=", Modifier.weight(1f), Accent, Background) { press("=") }
+            CalcKey("0", Modifier.weight(2f), KeyStyle.DIGIT) { press("0") }
+            CalcKey(".", Modifier.weight(1f), KeyStyle.DIGIT) { press(".") }
+            CalcKey("=", Modifier.weight(1f), KeyStyle.EQ) { press("=") }
         }
     }
 }
@@ -1248,19 +1710,33 @@ private fun BasicCalculator() {
 private fun CalcKey(
     label: String,
     modifier: Modifier,
-    bg: Color,
-    fg: Color,
+    style: KeyStyle,
     onClick: () -> Unit
 ) {
+    val base = modifier
+        .height(60.dp)
+        .clip(RoundedCornerShape(18.dp))
+    val styled = when (style) {
+        KeyStyle.EQ -> base.background(accentBrush())
+        KeyStyle.OP -> base.background(Accent.copy(alpha = 0.16f))
+        KeyStyle.FN -> base.background(Line)
+        KeyStyle.DIGIT -> base.background(PanelHi)
+    }
+    val fg = when (style) {
+        KeyStyle.EQ -> Background
+        KeyStyle.OP -> Accent
+        else -> White
+    }
     Box(
-        modifier = modifier
-            .height(58.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(bg)
-            .clickable(onClick = onClick),
+        modifier = styled.clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Text(label, color = fg, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text(
+            label,
+            color = fg,
+            fontSize = 24.sp,
+            fontWeight = if (style == KeyStyle.DIGIT) FontWeight.Medium else FontWeight.Bold
+        )
     }
 }
 
