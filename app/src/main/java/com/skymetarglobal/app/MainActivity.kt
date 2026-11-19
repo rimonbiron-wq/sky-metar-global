@@ -311,6 +311,7 @@ fun CategoryCard(result: MetarResult) {
             )
         }
     }
+ 
     @Composable
 fun CloudsScreen() {
     var city by remember { mutableStateOf("") }
