@@ -54,8 +54,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        window.statusBarColor = android.graphics.Color.rgb(14, 35, 64)
-        window.navigationBarColor = android.graphics.Color.rgb(10, 21, 38)
+        window.statusBarColor = android.graphics.Color.rgb(9, 27, 18)
+        window.navigationBarColor = android.graphics.Color.rgb(5, 13, 9)
 
         val prefs = getSharedPreferences("sky_metar", MODE_PRIVATE)
         val saved = prefs.getString("lang", null)
@@ -67,17 +67,17 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// ---------------------------------------------------------------- design tokens
-private val Background = Color(0xFF060E1B)
-private val Panel = Color(0xFF0F1D31)
-private val PanelHi = Color(0xFF16273F)
-private val Line = Color(0xFF223652)
-private val Accent = Color(0xFF35B9E9)
-private val Accent2 = Color(0xFF4F8CFF)
-private val White = Color(0xFFF4F7FC)
-private val Muted = Color(0xFF8FA0B6)
-private val Warn = Color(0xFFFFA726)
-private val Danger = Color(0xFFF44336)
+// ---------------------------------------------------------------- design tokens (Emerald Night)
+private val Background = Color(0xFF050D09)
+private val Panel = Color(0xFF0C1A12)
+private val PanelHi = Color(0xFF14251A)
+private val Line = Color(0xFF23392B)
+private val Accent = Color(0xFF2FD48F)
+private val Accent2 = Color(0xFF16A9B8)
+private val White = Color(0xFFEFF6F1)
+private val Muted = Color(0xFF8CA394)
+private val Warn = Color(0xFFFFB74D)
+private val Danger = Color(0xFFEF5350)
 
 private fun accentBrush(): Brush = Brush.horizontalGradient(listOf(Accent, Accent2))
 
@@ -468,7 +468,7 @@ fun Header(lang: Lang, onLangChange: (Lang) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Brush.verticalGradient(listOf(Color(0xFF0E2340), Background)))
+            .background(Brush.verticalGradient(listOf(Color(0xFF0E2417), Background)))
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -559,10 +559,10 @@ private fun BottomBar(selected: String, onSelect: (String) -> Unit) {
     val items = listOf(
         Triple("METAR", "📡", "METAR & TAF"),
         Triple("CLOUDS", "☁", t("tab_clouds")),
-        Triple("CALC", "🧮", t("tab_calc"))
+        Triple("CALC", "🛠️", t("tab_calc"))
     )
     NavigationBar(
-        containerColor = Color(0xFF0A1526),
+        containerColor = Color(0xFF0A1810),
         tonalElevation = 0.dp
     ) {
         items.forEach { (id, icon, label) ->
@@ -1666,7 +1666,7 @@ private fun BasicCalculator() {
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(displayShape)
-                .background(Brush.verticalGradient(listOf(Color(0xFF12304F), Panel)))
+                .background(Brush.verticalGradient(listOf(Color(0xFF12301F), Panel)))
                 .border(1.dp, Line, displayShape)
                 .padding(horizontal = 18.dp, vertical = 20.dp),
             horizontalAlignment = Alignment.End,
