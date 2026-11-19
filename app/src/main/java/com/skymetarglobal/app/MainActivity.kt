@@ -3,6 +3,7 @@ package com.skymetarglobal.app
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
@@ -32,6 +33,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONArray
@@ -106,6 +108,29 @@ private val translations: Map<String, Map<Lang, String>> = mapOf(
     "subtitle" to tr("GLOBAL AVIATION WEATHER", "MÉTÉO AÉRONAUTIQUE MONDIALE", "الطقس الجوي العالمي"),
     "tab_clouds" to tr("CLOUDS", "NUAGES", "السحب"),
     "tab_calc" to tr("CALCULATOR", "CALCULATRICE", "الحاسبة"),
+    "tab_maps" to tr("MAPS", "CARTES", "الخرائط"),
+    "maps_title" to tr("WEATHER MAPS", "CARTES MÉTÉO", "خرائط الطقس"),
+    "maps_map" to tr("INTERACTIVE MAP", "CARTE INTERACTIVE", "خريطة تفاعلية"),
+    "maps_surface" to tr("SURFACE", "SURFACE", "السطح"),
+    "maps_level" to tr("Level", "Niveau", "المستوى"),
+    "maps_overlay" to tr("Layer", "Couche", "الطبقة"),
+    "maps_hint" to tr(
+        "Search an airport to center the map and load its 15-day forecast. Drag to explore the world.",
+        "Recherchez un aéroport pour centrer la carte et charger ses prévisions sur 15 jours. Glissez pour explorer le monde.",
+        "ابحث عن مطار لتمركز الخريطة وتحميل توقعات 15 يوماً. اسحب لاستكشاف العالم."
+    ),
+    "maps_source" to tr(
+        "Map: Windy.com (radar, surface & altitude)  ·  Forecast: Open-Meteo",
+        "Carte : Windy.com (radar, surface & altitude)  ·  Prévisions : Open-Meteo",
+        "الخريطة: Windy.com (الرادار، السطح والارتفاع)  ·  التوقعات: Open-Meteo"
+    ),
+    "ov_radar" to tr("RADAR", "RADAR", "الرادار"),
+    "ov_wind" to tr("WIND", "VENT", "الرياح"),
+    "ov_temp" to tr("TEMP", "TEMP.", "الحرارة"),
+    "ov_clouds" to tr("CLOUDS", "NUAGES", "السحب"),
+    "ov_rain" to tr("RAIN", "PLUIE", "المطر"),
+    "daily_title" to tr("15-DAY FORECAST", "PRÉVISION 15 JOURS", "توقعات 15 يوم"),
+    "today" to tr("TODAY", "AUJ.", "اليوم"),
     "metar_weather" to tr("METAR WEATHER", "MÉTÉO METAR", "طقس METAR"),
     "station_label" to tr("ICAO Station (e.g. GMMG)", "Station OACI (ex. GMMG)", "محطة ICAO (مثال GMMG)"),
     "btn_live" to tr("LIVE METAR + TAF", "METAR + TAF EN DIRECT", "METAR + TAF مباشر"),
@@ -250,6 +275,16 @@ data class HourForecast(
     val humidity: Double?,
     val qnh: Double?,
     val qfe: Double?
+)
+
+data class DayForecast(
+    val date: String,
+    val weekday: String,
+    val code: Int,
+    val tMax: Double,
+    val tMin: Double,
+    val precip: Double,
+    val windKt: Double?
 )
 
 // ================================================================ SHARED UI KIT
@@ -428,6 +463,7 @@ fun SkyMetarApp(initialLang: Lang = Lang.EN, onLangChange: (Lang) -> Unit = {}) 
                     when (selectedTab) {
                         "METAR" -> MetarTafScreen(Modifier.fillMaxSize())
                         "CLOUDS" -> CloudsScreen(Modifier.fillMaxSize())
+                        "MAPS" -> MapsScreen(Modifier.fillMaxSize())
                         "CALC" -> CalculatorScreen(Modifier.fillMaxSize())
                     }
                 }
@@ -559,6 +595,7 @@ private fun BottomBar(selected: String, onSelect: (String) -> Unit) {
     val items = listOf(
         Triple("METAR", "📡", "METAR & TAF"),
         Triple("CLOUDS", "☁", t("tab_clouds")),
+        Triple("MAPS", "🗺️", t("tab_maps")),
         Triple("CALC", "", t("tab_calc"))
     )
     NavigationBar(
@@ -1138,6 +1175,285 @@ fun ForecastCard(h: HourForecast) {
         ) {
             StatTile("QNH", qnhText, Modifier.weight(1f))
             StatTile("QFE", qfeText, Modifier.weight(1f))
+        }
+    }
+}
+
+// ================================================================ MAPS TAB (interactive world map + 15-day forecast)
+
+private val mapOverlays = listOf(
+    "radar" to "ov_radar",
+    "wind" to "ov_wind",
+    "temp" to "ov_temp",
+    "clouds" to "ov_clouds",
+    "rain" to "ov_rain"
+)
+
+@Composable
+fun MapsScreen(modifier: Modifier = Modifier) {
+    var query by remember { mutableStateOf("") }
+    var appliedQuery by remember { mutableStateOf("") }
+    var allAirports by remember { mutableStateOf(airportsCache ?: emptyList()) }
+    var selectedAirport by remember { mutableStateOf<Airport?>(null) }
+    var days by remember { mutableStateOf(listOf<DayForecast>()) }
+    var listLoading by remember { mutableStateOf(false) }
+    var loading by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf("") }
+    var level by remember { mutableStateOf("surface") }
+    var overlay by remember { mutableStateOf("radar") }
+    val lang = LocalLang.current
+
+    LaunchedEffect(Unit) {
+        if (allAirports.isEmpty()) {
+            listLoading = true
+            message = "loading_codes"
+            loadAirports { list, error ->
+                allAirports = list
+                message = error
+                listLoading = false
+            }
+        }
+    }
+
+    val filtered = remember(appliedQuery, allAirports) {
+        val q = appliedQuery.trim()
+        if (q.isEmpty()) emptyList()
+        else allAirports.filter {
+            it.icao.contains(q, ignoreCase = true) ||
+                    it.city.contains(q, ignoreCase = true) ||
+                    it.name.contains(q, ignoreCase = true)
+        }
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        ProCard {
+            SectionTitle(t("maps_title"))
+
+            ProField(
+                value = query,
+                onValueChange = { query = it },
+                label = t("search_field"),
+                ltr = false,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { appliedQuery = query.trim() })
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ProButton("🔍 " + t("btn_search"), Modifier.weight(1f)) {
+                    appliedQuery = query.trim()
+                }
+                if (query.isNotEmpty() || appliedQuery.isNotEmpty()) {
+                    ProButton("✕", Modifier.width(56.dp), filled = false) {
+                        query = ""
+                        appliedQuery = ""
+                    }
+                }
+            }
+
+            if (message.isNotBlank()) {
+                Text(errText(message), color = Muted, fontSize = 13.sp)
+            }
+        }
+
+        // airport matches (first 6, tap to center the map + load the forecast)
+        if (appliedQuery.trim().isNotEmpty()) {
+            if (listLoading) {
+                CircularProgressIndicator(color = Accent)
+            }
+            filtered.take(6).forEach { airport ->
+                val shape = RoundedCornerShape(14.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(shape)
+                        .background(Panel)
+                        .border(1.dp, Line, shape)
+                        .clickable {
+                            selectedAirport = airport
+                            days = emptyList()
+                            message = ""
+                            loading = true
+                            fetchDailyForecast(airport, lang.code) { list, error ->
+                                days = list
+                                message = error
+                                loading = false
+                            }
+                        }
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Accent.copy(alpha = 0.15f))
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            airport.icao,
+                            color = Accent,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    Column {
+                        Text(airport.name, color = White, fontSize = 14.sp, maxLines = 1)
+                        if (airport.city.isNotBlank()) {
+                            Text(airport.city, color = Muted, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+            if (filtered.isEmpty() && !listLoading) {
+                Text(t("no_airports"), color = Muted, fontSize = 13.sp)
+            }
+        }
+
+        selectedAirport?.let { airport ->
+            ProCard(borderColor = Accent.copy(alpha = 0.6f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            airport.name,
+                            color = White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            maxLines = 1
+                        )
+                        Text(
+                            "${t("elevation")}: ${airport.elevFt} ${t("ft")}",
+                            color = Muted,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Text(
+                        airport.icao,
+                        color = Accent,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 20.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+        }
+
+        ProCard {
+            SectionTitle(t("maps_map"))
+
+            Text(t("maps_level"), color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                CategoryChip(t("maps_surface"), level == "surface") { level = "surface" }
+                listOf("950 hPa" to "950h", "850 hPa" to "850h", "700 hPa" to "700h", "500 hPa" to "500h")
+                    .forEach { (label, v) ->
+                        CategoryChip(label, level == v) { level = v }
+                    }
+            }
+
+            Text(t("maps_overlay"), color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                mapOverlays.forEach { (value, key) ->
+                    CategoryChip(t(key), overlay == value) { overlay = value }
+                }
+            }
+
+            val lat = selectedAirport?.lat ?: 25.0
+            val lon = selectedAirport?.lon ?: -10.0
+            val mapUrl = "https://embed.windy.com/embed2.html?lat=$lat&lon=$lon" +
+                    "&zoom=${if (selectedAirport != null) 8 else 3}" +
+                    "&level=$level&overlay=$overlay&menu=&message=true" +
+                    "&marker=${if (selectedAirport != null) "true" else ""}" +
+                    "&calendar=now&pressure=&type=map&location=coordinates&detail=" +
+                    "&metricWind=kt&metricTemp=%C2%B0C&radarRange=-1"
+
+            AndroidView(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(340.dp)
+                    .clip(RoundedCornerShape(14.dp)),
+                factory = { ctx ->
+                    WebView(ctx).apply {
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                    }
+                },
+                update = { wv ->
+                    if (wv.tag != mapUrl) {
+                        wv.tag = mapUrl
+                        wv.loadUrl(mapUrl)
+                    }
+                }
+            )
+
+            Text(t("maps_source"), color = Muted, fontSize = 11.sp)
+        }
+
+        if (selectedAirport == null) {
+            Text(t("maps_hint"), color = Muted, fontSize = 13.sp)
+        }
+
+        if (selectedAirport != null) {
+            SectionTitle(t("daily_title"))
+            if (loading) {
+                CircularProgressIndicator(color = Accent)
+            }
+            days.forEachIndexed { i, d ->
+                DayCard(d, i == 0)
+            }
+        }
+    }
+}
+
+@Composable
+fun DayCard(d: DayForecast, today: Boolean) {
+    ProCard {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Column(Modifier.width(70.dp)) {
+                Text(
+                    if (today) t("today") else d.date,
+                    color = Accent,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+                Text(d.weekday, color = Muted, fontSize = 11.sp)
+            }
+            Text(wmoEmoji(d.code), fontSize = 24.sp)
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "${d.tMax.roundToInt()}° / ${d.tMin.roundToInt()}°",
+                    color = White,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    style = LocalTextStyle.current.copy(textDirection = TextDirection.Ltr)
+                )
+                Text(
+                    "${d.precip.roundToInt()} mm  ·  ${d.windKt?.roundToInt() ?: "--"} ${t("kt")}",
+                    color = Muted,
+                    fontSize = 12.sp,
+                    style = LocalTextStyle.current.copy(textDirection = TextDirection.Ltr)
+                )
+            }
         }
     }
 }
@@ -2019,6 +2335,90 @@ fun fetchForecast(airport: Airport, callback: (List<HourForecast>, String) -> Un
                         humidity = rh.dbl(i),
                         qnh = qnh,
                         qfe = qnh?.let { qfeFromQnh(it, airport.elevFt) }
+                    )
+                )
+            }
+
+            mainHandler.post {
+                callback(list, if (list.isEmpty()) "no_forecast" else "")
+            }
+        } catch (e: Exception) {
+            mainHandler.post {
+                callback(emptyList(), "err_forecast|${e.message ?: ""}")
+            }
+        }
+    }
+}
+
+fun wmoEmoji(code: Int): String = when (code) {
+    0 -> "☀️"
+    1 -> "🌤️"
+    2 -> "⛅"
+    3 -> "☁️"
+    45, 48 -> "🌫️"
+    in 51..57 -> "🌦️"
+    in 61..67 -> "🌧️"
+    in 71..77 -> "❄️"
+    in 80..82 -> "🌧️"
+    85, 86 -> "🌨️"
+    in 95..99 -> "⛈️"
+    else -> "☁️"
+}
+
+/** 15-day daily forecast (Open-Meteo daily API: 16 days requested, trimmed to 15). */
+fun fetchDailyForecast(
+    airport: Airport,
+    langCode: String,
+    callback: (List<DayForecast>, String) -> Unit
+) {
+    thread {
+        try {
+            val url = URL(
+                String.format(
+                    Locale.US,
+                    "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f" +
+                            "&daily=weather_code,temperature_2m_max,temperature_2m_min," +
+                            "precipitation_sum,wind_speed_10m_max" +
+                            "&wind_speed_unit=kn&timezone=UTC&forecast_days=16",
+                    airport.lat, airport.lon
+                )
+            )
+            val daily = JSONObject(download(url)).getJSONObject("daily")
+            val times = daily.getJSONArray("time")
+            val codes = daily.getJSONArray("weather_code")
+            val tMax = daily.getJSONArray("temperature_2m_max")
+            val tMin = daily.getJSONArray("temperature_2m_min")
+            val prcp = daily.getJSONArray("precipitation_sum")
+            val wMax = daily.getJSONArray("wind_speed_10m_max")
+
+            val inFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+            val dateFmt = SimpleDateFormat("dd/MM", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+            val dayFmt = SimpleDateFormat("EEE", Locale(langCode)).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+
+            val list = ArrayList<DayForecast>()
+            for (i in 0 until times.length()) {
+                if (list.size >= 15) break
+                val ts = times.getString(i)
+                val parsed = try {
+                    inFmt.parse(ts)
+                } catch (e: Exception) {
+                    null
+                }
+                list.add(
+                    DayForecast(
+                        date = if (parsed != null) dateFmt.format(parsed) else ts,
+                        weekday = parsed?.let { dayFmt.format(it).uppercase(Locale.getDefault()) } ?: "",
+                        code = codes.dbl(i)?.roundToInt() ?: 3,
+                        tMax = tMax.dbl(i) ?: 0.0,
+                        tMin = tMin.dbl(i) ?: 0.0,
+                        precip = prcp.dbl(i) ?: 0.0,
+                        windKt = wMax.dbl(i)
                     )
                 )
             }
