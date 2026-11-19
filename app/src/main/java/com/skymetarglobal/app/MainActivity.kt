@@ -120,15 +120,15 @@ private val translations: Map<String, Map<Lang, String>> = mapOf(
         "ابحث عن مطار لتمركز الخريطة وتحميل توقعات 15 يوماً. اسحب لاستكشاف العالم."
     ),
     "maps_source" to tr(
-        "Map: Windy.com (radar, surface & altitude)  ·  Forecast: Open-Meteo",
-        "Carte : Windy.com (radar, surface & altitude)  ·  Prévisions : Open-Meteo",
-        "الخريطة: Windy.com (الرادار، السطح والارتفاع)  ·  التوقعات: Open-Meteo"
+        "Map: Ventusky.com (radar, surface & altitude)  ·  Forecast: Open-Meteo",
+        "Carte : Ventusky.com (radar, surface & altitude)  ·  Prévisions : Open-Meteo",
+        "الخريطة: Ventusky.com (الرادار، السطح والارتفاع)  ·  التوقعات: Open-Meteo"
     ),
     "ov_radar" to tr("RADAR", "RADAR", "الرادار"),
     "ov_wind" to tr("WIND", "VENT", "الرياح"),
     "ov_temp" to tr("TEMP", "TEMP.", "الحرارة"),
     "ov_clouds" to tr("CLOUDS", "NUAGES", "السحب"),
-    "ov_rain" to tr("RAIN", "PLUIE", "المطر"),
+    "ov_pressure" to tr("PRESSURE", "PRESSION", "الضغط"),
     "daily_title" to tr("15-DAY FORECAST", "PRÉVISION 15 JOURS", "توقعات 15 يوم"),
     "today" to tr("TODAY", "AUJ.", "اليوم"),
     "metar_weather" to tr("METAR WEATHER", "MÉTÉO METAR", "طقس METAR"),
@@ -1181,12 +1181,13 @@ fun ForecastCard(h: HourForecast) {
 
 // ================================================================ MAPS TAB (interactive world map + 15-day forecast)
 
+// Ventusky layer ids -> translation keys
 private val mapOverlays = listOf(
-    "radar" to "ov_radar",
+    "rain" to "ov_radar",
     "wind" to "ov_wind",
-    "temp" to "ov_temp",
+    "temperature" to "ov_temp",
     "clouds" to "ov_clouds",
-    "rain" to "ov_rain"
+    "pressure" to "ov_pressure"
 )
 
 @Composable
@@ -1199,8 +1200,8 @@ fun MapsScreen(modifier: Modifier = Modifier) {
     var listLoading by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
-    var level by remember { mutableStateOf("surface") }
-    var overlay by remember { mutableStateOf("radar") }
+    var alt by remember { mutableStateOf(0) } // 0 = surface, else altitude in meters (≈950/850/700/500 hPa)
+    var overlay by remember { mutableStateOf("rain") }
     val lang = LocalLang.current
 
     LaunchedEffect(Unit) {
@@ -1356,10 +1357,10 @@ fun MapsScreen(modifier: Modifier = Modifier) {
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                CategoryChip(t("maps_surface"), level == "surface") { level = "surface" }
-                listOf("950 hPa" to "950h", "850 hPa" to "850h", "700 hPa" to "700h", "500 hPa" to "500h")
-                    .forEach { (label, v) ->
-                        CategoryChip(label, level == v) { level = v }
+                CategoryChip(t("maps_surface"), alt == 0) { alt = 0 }
+                listOf("950 hPa" to 500, "850 hPa" to 1500, "700 hPa" to 3000, "500 hPa" to 5500)
+                    .forEach { (label, m) ->
+                        CategoryChip(label, alt == m) { alt = m }
                     }
             }
 
@@ -1377,12 +1378,10 @@ fun MapsScreen(modifier: Modifier = Modifier) {
 
             val lat = selectedAirport?.lat ?: 25.0
             val lon = selectedAirport?.lon ?: -10.0
-            val mapUrl = "https://embed.windy.com/embed2.html?lat=$lat&lon=$lon" +
-                    "&zoom=${if (selectedAirport != null) 8 else 3}" +
-                    "&level=$level&overlay=$overlay&menu=&message=true" +
-                    "&marker=${if (selectedAirport != null) "true" else ""}" +
-                    "&calendar=now&pressure=&type=map&location=coordinates&detail=" +
-                    "&metricWind=kt&metricTemp=%C2%B0C&radarRange=-1"
+            val zoom = if (selectedAirport != null) 8 else 3
+            // Ventusky official embed: p=lat;lon;zoom, l=layer, h=altitude in meters (omitted = surface)
+            val mapUrl = "https://embed.ventusky.com/?p=$lat;$lon;$zoom&l=$overlay" +
+                    (if (alt > 0) "&h=$alt" else "")
 
             AndroidView(
                 modifier = Modifier
