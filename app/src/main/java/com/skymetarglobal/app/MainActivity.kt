@@ -13,6 +13,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -34,74 +35,78 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-data class CloudAnalysis(
-    val layers: String,
-    val ceilingFeet: Int?,
-    val ceilingText: String
+data class CloudLayer(
+    val code: String,
+    val oktas: String,
+    val height: Int?
 )
 
-data class FlightColor(
+data class CloudAnalysis(
+    val layers: List<CloudLayer>,
+    val ceilingFeet: Int?,
+    val ceilingUnknown: Boolean
+)
+
+data class MetarCategory(
     val name: String,
     val color: Color,
     val minVisibility: Double,
     val minCeiling: Int
 )
 
-val flightColors = listOf(
-    FlightColor("BLUE", Color(0xFF168BFF), 8.0, 2500),
-    FlightColor("GREEN", Color(0xFF19A65A), 5.0, 1500),
-    FlightColor("GREEN / YELLOW", Color(0xFF9ACD32), 5.0, 1000),
-    FlightColor("YELLOW", Color(0xFFFFD21F), 3.0, 500),
-    FlightColor("YELLOW / RED", Color(0xFFFF9B21), 1.5, 350),
-    FlightColor("RED", Color(0xFFE53935), 1.0, 220),
-    FlightColor("GREY", Color(0xFF777777), 0.0, 0)
+val categories = listOf(
+    MetarCategory("BLUE", Color(0xFF168BFF), 8.0, 2500),
+    MetarCategory("GREEN", Color(0xFF19A65A), 5.0, 1500),
+    MetarCategory("GREEN / YELLOW", Color(0xFF9ACD32), 5.0, 1000),
+    MetarCategory("YELLOW", Color(0xFFFFD21F), 3.0, 500),
+    MetarCategory("YELLOW / RED", Color(0xFFFF9B21), 1.5, 350),
+    MetarCategory("RED", Color(0xFFE53935), 1.0, 220),
+    MetarCategory("GREY", Color(0xFF777777), 0.0, 0)
 )
 
-fun classifyConditions(
-    visibilityKm: Double?,
-    ceilingFeet: Int?
-): FlightColor? {
-
-    if (visibilityKm == null) return null
-
-    val ceiling = ceilingFeet ?: Int.MAX_VALUE
-
-    return flightColors.firstOrNull {
-        visibilityKm >= it.minVisibility &&
-        ceiling >= it.minCeiling
-    } ?: flightColors.last()
-}
-
-fun parseVisibilityKm(raw: String): Double? {
-
-    val metric = Regex(
-        """(?<![A-Z0-9])(\d{4})(?![A-Z0-9])"""
-    ).find(raw)
-
-    if (metric != null) {
-        val value = metric.groupValues[1].toInt()
-
-        return when {
-            value == 9999 -> 10.0
-            else -> value / 1000.0
-        }
+fun parseVisibility(raw: String): Double? {
+    val tokens = raw.trim().split(Regex("\\s+"))
+    val windIndex = tokens.indexOfFirst {
+        it.matches(Regex("(?:\\d{3}|VRB)\\d{2,3}(?:G\\d{2,3})?KT"))
     }
 
-    val smToken = raw.split(Regex("\\s+"))
-        .firstOrNull { it.endsWith("SM") }
-        ?: return null
-
-    var valueText = smToken.removeSuffix("SM")
-    var multiplier = 1.0
-
-    if (valueText.startsWith("P")) {
-        valueText = valueText.drop(1)
-    } else if (valueText.startsWith("M")) {
-        valueText = valueText.drop(1)
+    if (windIndex < 0 || windIndex + 1 >= tokens.size) {
+        return null
     }
 
-    fun fractionValue(text: String): Double? {
-        val parts = text.split("/")
+    val token = tokens[windIndex + 1]
+
+    if (token == "CAVOK") return 10.0
+
+    if (token.matches(Regex("\\d{4}"))) {
+        val meters = token.toInt()
+        return if (meters == 9999) 10.0 else meters / 1000.0
+    }
+
+    var smToken = token
+
+    if (
+        windIndex + 2 < tokens.size &&
+        tokens[windIndex + 2].endsWith("SM") &&
+        token.matches(Regex("\\d+"))
+    ) {
+        smToken = "$token ${tokens[windIndex + 2]}"
+    }
+
+    if (!smToken.endsWith("SM")) return null
+
+    var value = smToken.removeSuffix("SM")
+        .replace(" ", "")
+
+    val greaterThan = value.startsWith("P")
+    val lessThan = value.startsWith("M")
+
+    if (greaterThan || lessThan) {
+        value = value.drop(1)
+    }
+
+    val miles = if (value.contains("/")) {
+        val parts = value.split("/")
         if (parts.size != 2) return null
 
         val numerator = parts[0].toDoubleOrNull() ?: return null
@@ -109,46 +114,27 @@ fun parseVisibilityKm(raw: String): Double? {
 
         if (denominator == 0.0) return null
 
-        return numerator / denominator
-    }
-
-    val miles = if (valueText.contains(" ")) {
-        val parts = valueText.split(" ", limit = 2)
-        val whole = parts[0].toDoubleOrNull() ?: return null
-        val fraction = fractionValue(parts[1]) ?: return null
-        whole + fraction
-    } else if (valueText.contains("/")) {
-        fractionValue(valueText) ?: return null
+        numerator / denominator
     } else {
-        valueText.toDoubleOrNull() ?: return null
+        value.toDoubleOrNull() ?: return null
     }
 
-    return miles * 1.60934 * multiplier
+    return miles * 1.60934
 }
 
 fun analyzeClouds(raw: String): CloudAnalysis {
-
     val regex = Regex(
         """(?<![A-Z0-9])(?:FEW|SCT|BKN|OVC)\d{3}(?:CB|TCU)?|(?<![A-Z0-9])VV(?:\d{3}|///)"""
     )
 
-    val matches = regex.findAll(raw)
-        .map { it.value }
-        .toList()
+    val matches = regex.findAll(raw).map {
+        it.value
+    }.toList()
 
-    if (matches.isEmpty()) {
-        return CloudAnalysis(
-            layers = "No cloud layers reported",
-            ceilingFeet = null,
-            ceilingText = "No ceiling reported"
-        )
-    }
+    val layers = matches.map { token ->
+        val code = token.take(3)
 
-    val descriptions = matches.map { token ->
-
-        val cover = token.take(3)
-
-        val heightText = if (cover == "VV") {
+        val heightText = if (code == "VV") {
             token.substring(2, 5)
         } else {
             token.substring(3, 6)
@@ -156,50 +142,58 @@ fun analyzeClouds(raw: String): CloudAnalysis {
 
         val height = heightText.toIntOrNull()?.times(100)
 
-        val oktas = when (cover) {
+        val oktas = when (code) {
             "FEW" -> "1–2 OKTAS"
             "SCT" -> "3–4 OKTAS"
             "BKN" -> "5–7 OKTAS"
             "OVC" -> "8 OKTAS"
-            "VV" -> "Vertical visibility"
+            "VV" -> "VERTICAL VISIBILITY"
             else -> ""
         }
 
-        "$cover — $oktas — ${height?.let { "$it ft" } ?: "Unknown height"}"
+        CloudLayer(code, oktas, height)
     }
 
-    val ceilingHeights = matches.mapNotNull { token ->
-
-        val cover = token.take(3)
-
-        if (cover == "BKN" || cover == "OVC" || cover == "VV") {
-
-            val heightText = if (cover == "VV") {
-                token.substring(2, 5)
-            } else {
-                token.substring(3, 6)
-            }
-
-            heightText.toIntOrNull()?.times(100)
-        } else {
-            null
-        }
+    val ceilingLayers = layers.filter {
+        it.code == "BKN" ||
+        it.code == "OVC" ||
+        it.code == "VV"
     }
 
-    val ceiling = ceilingHeights.minOrNull()
+    val ceilingUnknown = ceilingLayers.any {
+        it.height == null
+    }
+
+    val ceiling = ceilingLayers
+        .mapNotNull { it.height }
+        .minOrNull()
 
     return CloudAnalysis(
-        layers = descriptions.joinToString("\n"),
+        layers = layers,
         ceilingFeet = ceiling,
-        ceilingText = ceiling?.let { "$it ft" }
-            ?: "No ceiling reported"
+        ceilingUnknown = ceilingUnknown
     )
+}
+
+fun classifyMetar(
+    visibilityKm: Double?,
+    ceilingFeet: Int?
+): MetarCategory? {
+
+    if (visibilityKm == null) return null
+
+    val ceiling = ceilingFeet ?: Int.MAX_VALUE
+
+    return categories.firstOrNull { category ->
+        visibilityKm >= category.minVisibility &&
+        ceiling >= category.minCeiling
+    } ?: categories.last()
 }
 
 @Composable
 fun SkyMetarApp() {
 
-    val mainHandler = remember {
+    val handler = remember {
         Handler(Looper.getMainLooper())
     }
 
@@ -208,31 +202,28 @@ fun SkyMetarApp() {
     var status by remember { mutableStateOf("Enter ICAO code") }
 
     var airport by remember { mutableStateOf("") }
-    var report by remember { mutableStateOf("") }
+    var rawReport by remember { mutableStateOf("") }
     var observation by remember { mutableStateOf("") }
 
     var temperature by remember { mutableStateOf("—") }
     var dewpoint by remember { mutableStateOf("—") }
     var wind by remember { mutableStateOf("—") }
-
     var visibility by remember { mutableStateOf("—") }
-    var visibilityKm by remember { mutableStateOf<Double?>(null) }
 
-    var cloudLayers by remember { mutableStateOf("—") }
-    var cloudCeiling by remember { mutableStateOf("—") }
-    var ceilingFeet by remember { mutableStateOf<Int?>(null) }
+    var cloudAnalysis by remember {
+        mutableStateOf(CloudAnalysis(emptyList(), null, false))
+    }
 
-    var finalColor by remember { mutableStateOf<FlightColor?>(null) }
-    var visibilityColor by remember { mutableStateOf<FlightColor?>(null) }
-    var ceilingColor by remember { mutableStateOf<FlightColor?>(null) }
+    var finalCategory by remember {
+        mutableStateOf<MetarCategory?>(null)
+    }
 
-    val bg = Color(0xFF081522)
+    val background = Color(0xFF081522)
     val panel = Color(0xFF102638)
     val white = Color.White
     val muted = Color(0xFF9EB4C8)
 
     fun searchMetar() {
-
         val code = station.trim().uppercase(Locale.US)
 
         if (!code.matches(Regex("[A-Z0-9]{4}"))) {
@@ -241,25 +232,22 @@ fun SkyMetarApp() {
         }
 
         loading = true
-        status = "Connecting..."
+        status = "Connecting to aviation weather service..."
 
         airport = ""
-        report = ""
-        finalColor = null
-        visibilityColor = null
-        ceilingColor = null
+        rawReport = ""
+        finalCategory = null
+        cloudAnalysis = CloudAnalysis(emptyList(), null, false)
 
         Thread {
-
             var connection: HttpURLConnection? = null
 
             try {
-
                 val address =
                     "https://aviationweather.gov/api/data/metar?ids=$code&format=json"
 
-                connection =
-                    URL(address).openConnection() as HttpURLConnection
+                connection = URL(address).openConnection()
+                    as HttpURLConnection
 
                 connection.requestMethod = "GET"
                 connection.connectTimeout = 15000
@@ -272,192 +260,114 @@ fun SkyMetarApp() {
 
                 val responseCode = connection.responseCode
 
-                if (responseCode == 204) {
-
-                    mainHandler.post {
-                        status = "No METAR found for $code"
+                if (responseCode !in 200..299) {
+                    handler.post {
+                        status = "Server response: HTTP $responseCode"
                         loading = false
                     }
-
-                } else if (responseCode in 200..299) {
-
-                    val body = connection.inputStream
-                        .bufferedReader()
-                        .use { it.readText() }
-
-                    val data = JSONArray(body)
-
-                    if (data.length() == 0) {
-
-                        mainHandler.post {
-                            status = "No METAR available"
-                            loading = false
-                        }
-
-                    } else {
-
-                        val item = data.getJSONObject(0)
-
-                        val name = item.optString("name", code)
-                        val raw = item.optString("rawOb", "")
-
-                        val temp = item.optString("temp", "—")
-                        val dew = item.optString("dewp", "—")
-
-                        val visKm = parseVisibilityKm(raw)
-                        val visText = visKm?.let {
-                            String.format(Locale.US, "%.1f km", it)
-                        } ?: "Unavailable"
-
-                        val direction = item.optString("wdir", "—")
-                        val speed = item.optString("wspd", "—")
-                        val gust = item.optString("wgst", "")
-
-                        val windText =
-                            "$direction° / $speed kt" +
-                            if (gust.isNotEmpty() && gust != "null") {
-                                " (gust $gust kt)"
-                            } else {
-                                ""
-                            }
-
-                        val time = item.optLong("obsTime", 0L)
-
-                        val timeText = if (time > 0L) {
-                            SimpleDateFormat(
-                                "yyyy-MM-dd HH:mm 'UTC'",
-                                Locale.US
-                            ).format(Date(time * 1000L))
-                        } else {
-                            "Time unavailable"
-                        }
-
-                        val clouds = analyzeClouds(raw)
-
-                        val visClass = classifyConditions(
-                            visKm,
-                            null
-                        )
-
-                        val ceilClass = if (clouds.ceilingFeet != null) {
-                            classifyConditions(
-                                10.0,
-                                clouds.ceilingFeet
-                            )
-                        } else {
-                            null
-                        }
-
-                        val overall = classifyConditions(
-                            visKm,
-                            clouds.ceilingFeet
-                        )
-
-                        mainHandler.post {
-
-                            airport = name
-                            report = raw
-                            observation = timeText
-
-                            temperature = "$temp °C"
-                            dewpoint = "$dew °C"
-                            wind = windText
-
-                            visibility = visText
-                            visibilityKm = visKm
-
-                            cloudLayers = clouds.layers
-                            cloudCeiling = clouds.ceilingText
-                            ceilingFeet = clouds.ceilingFeet
-
-                            visibilityColor = visClass
-                            ceilingColor = ceilClass
-                            finalColor = overall
-
-                            status = "METAR received successfully"
-                            loading = false
-                        }
-                    }
-
-                } else {
-
-                    mainHandler.post {
-                        status = "Server error: HTTP $responseCode"
-                        loading = false
-                    }
+                    return@Thread
                 }
 
-            } catch (e: Exception) {
+                val body = connection.inputStream
+                    .bufferedReader()
+                    .use { it.readText() }
 
-                mainHandler.post {
-                    status = "Connection error: ${e.message}"
+                val data = JSONArray(body)
+
+                if (data.length() == 0) {
+                    handler.post {
+                        status = "No METAR available for $code"
+                        loading = false
+                    }
+                    return@Thread
+                }
+
+                val item = data.getJSONObject(0)
+
+                val name = item.optString("name", code)
+                val raw = item.optString("rawOb", "")
+
+                val temp = item.optString("temp", "—")
+                val dew = item.optString("dewp", "—")
+
+                val direction = item.optString("wdir", "—")
+                val speed = item.optString("wspd", "—")
+                val gust = item.optString("wgst", "")
+
+                val windText =
+                    "$direction° / $speed kt" +
+                    if (gust.isNotEmpty() && gust != "null") {
+                        " (gust $gust kt)"
+                    } else {
+                        ""
+                    }
+
+                val vis = parseVisibility(raw)
+
+                val clouds = analyzeClouds(raw)
+
+                val category = classifyMetar(
+                    visibilityKm = vis,
+                    ceilingFeet = clouds.ceilingFeet
+                )
+
+                val time = item.optLong("obsTime", 0L)
+
+                val timeText = if (time > 0L) {
+                    SimpleDateFormat(
+                        "yyyy-MM-dd HH:mm 'UTC'",
+                        Locale.US
+                    ).format(Date(time * 1000L))
+                } else {
+                    "Time unavailable"
+                }
+
+                handler.post {
+                    airport = name
+                    rawReport = raw
+                    observation = timeText
+
+                    temperature = "$temp °C"
+                    dewpoint = "$dew °C"
+                    wind = windText
+
+                    visibility = vis?.let {
+                        String.format(Locale.US, "%.1f km", it)
+                    } ?: "Unavailable"
+
+                    cloudAnalysis = clouds
+                    finalCategory = category
+
+                    status = if (category == null) {
+                        "METAR received, visibility could not be read"
+                    } else {
+                        "METAR received successfully"
+                    }
+
                     loading = false
                 }
 
+            } catch (e: Exception) {
+                handler.post {
+                    status = "Connection error: ${e.message}"
+                    loading = false
+                }
             } finally {
                 connection?.disconnect()
             }
-
         }.start()
     }
 
-    @Composable
-    fun ColorResult(
-        heading: String,
-        result: FlightColor?
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(panel, RoundedCornerShape(12.dp))
-                .padding(14.dp)
-        ) {
-            Text(
-                heading,
-                color = muted,
-                fontSize = 12.sp
-            )
-
-            Spacer(Modifier.height(6.dp))
-
-            Row(
-                verticalAlignment =
-                    androidx.compose.ui.Alignment.CenterVertically
-            ) {
-                Box(
-                    Modifier
-                        .size(22.dp)
-                        .background(
-                            result?.color ?: Color.DarkGray,
-                            RoundedCornerShape(5.dp)
-                        )
-                )
-
-                Spacer(Modifier.width(10.dp))
-
-                Text(
-                    result?.name ?: "UNAVAILABLE",
-                    color = white,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 17.sp
-                )
-            }
-        }
-    }
-
     MaterialTheme {
-
         Surface(
             modifier = Modifier.fillMaxSize(),
-            color = bg
+            color = background
         ) {
-
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
                     .padding(18.dp),
-
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
 
@@ -496,9 +406,7 @@ fun SkyMetarApp() {
                     enabled = !loading,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        if (loading) "LOADING..." else "SEARCH METAR"
-                    )
+                    Text(if (loading) "LOADING..." else "SEARCH METAR")
                 }
 
                 Text(status, color = muted, fontSize = 13.sp)
@@ -518,60 +426,114 @@ fun SkyMetarApp() {
                         fontSize = 12.sp
                     )
 
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(panel, RoundedCornerShape(12.dp))
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+
+                        Text(
+                            "FINAL METAR CATEGORY",
+                            color = muted,
+                            fontSize = 12.sp
+                        )
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .background(
+                                        finalCategory?.color
+                                            ?: Color.DarkGray,
+                                        RoundedCornerShape(8.dp)
+                                    )
+                            )
+
+                            Spacer(Modifier.width(12.dp))
+
+                            Text(
+                                finalCategory?.name ?: "UNAVAILABLE",
+                                color = white,
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Text(
+                            "One final color calculated from visibility and cloud ceiling",
+                            color = muted,
+                            fontSize = 11.sp
+                        )
+                    }
+
+                    Text(
+                        "WEATHER DETAILS",
+                        color = white,
+                        fontWeight = FontWeight.Bold
+                    )
+
                     Text("TEMPERATURE: $temperature", color = white)
                     Text("DEW POINT: $dewpoint", color = white)
                     Text("WIND: $wind", color = white)
                     Text("VISIBILITY: $visibility", color = white)
 
-                    ColorResult(
-                        "VISIBILITY CATEGORY",
-                        visibilityColor
+                    HorizontalDivider(color = muted)
+
+                    Text(
+                        "CLOUD COVERAGE",
+                        color = white,
+                        fontWeight = FontWeight.Bold
                     )
+
+                    if (cloudAnalysis.layers.isEmpty()) {
+                        Text(
+                            "No cloud layers reported",
+                            color = muted
+                        )
+                    } else {
+                        cloudAnalysis.layers.forEach { layer ->
+                            Text(
+                                "${layer.code} — ${layer.oktas} — " +
+                                (layer.height?.let { "$it ft" }
+                                    ?: "Height unavailable"),
+                                color = Color(0xFFB9D9F2)
+                            )
+                        }
+                    }
+
+                    Text(
+                        "CLOUD CEILING: " +
+                        (cloudAnalysis.ceilingFeet?.let { "$it ft" }
+                            ?: "No ceiling reported"),
+                        color = white
+                    )
+
+                    if (cloudAnalysis.ceilingUnknown) {
+                        Text(
+                            "WARNING: Cloud ceiling height is incomplete",
+                            color = Color(0xFFFFB74D),
+                            fontSize = 12.sp
+                        )
+                    }
 
                     HorizontalDivider(color = muted)
 
                     Text(
-                        "CLOUD LAYERS",
+                        "RAW METAR",
                         color = white,
                         fontWeight = FontWeight.Bold
                     )
 
                     Text(
-                        cloudLayers,
-                        color = Color(0xFFB9D9F2),
-                        fontSize = 14.sp
-                    )
-
-                    Text(
-                        "CLOUD CEILING: $cloudCeiling",
-                        color = white
-                    )
-
-                    ColorResult(
-                        "CLOUD CEILING CATEGORY",
-                        ceilingColor
-                    )
-
-                    ColorResult(
-                        "FINAL FLIGHT CATEGORY",
-                        finalColor
-                    )
-
-                    Text(
-                        "RAW METAR REPORT",
-                        color = white,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    Text(
-                        report,
+                        rawReport,
                         color = Color(0xFFB9D9F2),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(
-                                panel,
-                                RoundedCornerShape(12.dp)
-                            )
+                            .background(panel, RoundedCornerShape(12.dp))
                             .padding(14.dp)
                     )
                 }
