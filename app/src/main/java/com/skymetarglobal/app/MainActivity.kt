@@ -1,4 +1,4 @@
-package com.skymetarglobal.app
+ package com.skymetarglobal.app
 
 import android.os.Bundle
 import android.os.Handler
@@ -1830,37 +1830,56 @@ fun parseMetar(raw: String): MetarResult {
     val ceiling = cloudHeights.minOrNull()
     val effectiveCeiling = ceiling ?: Int.MAX_VALUE
 
+    // Total cloud cover in oktas, worst case (FEW=2, SCT=4, BKN=5, OVC/VV=8).
+    // METAR FEW/SCT do not give the exact oktas (1-2 / 3-4), so the higher
+    // value is assumed; cover >= 4/8 blocks BLUE/GREEN like the table demands.
+    val coverOktas: Int = when {
+        Regex("""\b(?:VV|OVC)\d{3}""").containsMatchIn(text) -> 8
+        Regex("""\bBKN\d{3}""").containsMatchIn(text) -> 5
+        Regex("""\bSCT\d{3}""").containsMatchIn(text) -> 4
+        Regex("""\bFEW\d{3}""").containsMatchIn(text) -> 2
+        else -> 0    // SKC / NSC / NCD / CAVOK / no cloud group
+    }
+
     val category: String
     val color: Color
 
+    // Colour-code table (poster): PLAFOND >= (ft) / VISIBILITY > (km) / NEBULOSITE
+    // BLUE >=2500' >8km <4/8 - GREEN >=1500' >5km <4/8 - GREEN/YELLOW >=1000' >5km
+    // YELLOW >=500' >3km - YELLOW/RED >=350' >1.5km - RED >=220' >1km (cover >=4/8)
+    // below (<220' or <=1km) = SPECIAL grey. No ceiling = unlimited (cover <4/8).
     when {
         visibility == null -> {
             category = "GREY"
             color = Color(0xFF9E9E9E)
         }
-        visibility >= 8 && effectiveCeiling >= 2500 -> {
+        coverOktas < 4 && visibility > 8 -> {            // < 4/8: plafond illimite
             category = "BLUE"
             color = Color(0xFF42A5F5)
         }
-        visibility >= 5 && effectiveCeiling >= 1500 -> {
+        coverOktas < 4 && visibility > 5 -> {
             category = "GREEN"
             color = Color(0xFF4CAF50)
         }
-        visibility >= 5 && effectiveCeiling >= 1000 -> {
+        effectiveCeiling >= 1000 && visibility > 5 -> {  // cover >= 4/8
             category = "GREEN / YELLOW"
             color = Color(0xFFCDDC39)
         }
-        visibility >= 3 && effectiveCeiling >= 500 -> {
+        effectiveCeiling >= 500 && visibility > 3 -> {
             category = "YELLOW"
             color = Color(0xFFFFEB3B)
         }
-        visibility >= 1.5 && effectiveCeiling >= 350 -> {
+        effectiveCeiling >= 350 && visibility > 1.5 -> {
             category = "YELLOW / RED"
             color = Color(0xFFFF9800)
         }
-        else -> {
+        effectiveCeiling >= 220 && visibility > 1 -> {
             category = "RED"
             color = Color(0xFFF44336)
+        }
+        else -> {                                        // < 220' or <= 1 km
+            category = "SPECIAL"
+            color = Color(0xFF9E9E9E)
         }
     }
 
