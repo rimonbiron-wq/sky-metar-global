@@ -7,6 +7,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -98,7 +100,7 @@ fun SkyMetarApp() {
                 ) { selectedTab = "METAR & TAF" }
 
                 TabButton(
-                    text = "CLOUDS",
+                    text = "☁ CLOUDS",
                     selected = selectedTab == "CLOUDS",
                     modifier = Modifier.weight(1f)
                 ) { selectedTab = "CLOUDS" }
@@ -310,66 +312,106 @@ fun CategoryCard(result: MetarResult) {
 
 @Composable
 fun CloudsScreen(modifier: Modifier = Modifier) {
-    var city by remember { mutableStateOf("") }
-    var airports by remember { mutableStateOf(listOf<Airport>()) }
+    var query by remember { mutableStateOf("") }
+    var allAirports by remember { mutableStateOf(airportsCache ?: emptyList()) }
     var selectedAirport by remember { mutableStateOf<Airport?>(null) }
     var taf by remember { mutableStateOf("") }
+    var listLoading by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     var layers by remember { mutableStateOf(listOf<CloudLayer>()) }
 
-    Column(
+    // Load every ICAO code once, when the CLOUDS tab opens
+    LaunchedEffect(Unit) {
+        if (allAirports.isEmpty()) {
+            listLoading = true
+            message = "Loading all ICAO codes..."
+            loadAirports { list, error ->
+                allAirports = list
+                message = error
+                listLoading = false
+            }
+        }
+    }
+
+    val filtered = remember(query, allAirports) {
+        val q = query.trim()
+        if (q.isEmpty()) allAirports
+        else allAirports.filter {
+            it.icao.contains(q, ignoreCase = true) ||
+                    it.city.contains(q, ignoreCase = true) ||
+                    it.name.contains(q, ignoreCase = true)
+        }
+    }
+
+    LazyColumn(
         modifier = modifier
             .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(14.dp),
+            .padding(horizontal = 14.dp),
+        contentPadding = PaddingValues(vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text(
-            "CLOUD FORECAST",
-            color = Accent,
-            fontWeight = FontWeight.Bold,
-            fontSize = 19.sp
-        )
+        item {
+            Text(
+                "☁ CLOUD FORECAST",
+                color = Accent,
+                fontWeight = FontWeight.Bold,
+                fontSize = 19.sp
+            )
+        }
 
-        OutlinedTextField(
-            value = city,
-            onValueChange = { city = it },
-            label = { Text("Search city worldwide") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true
-        )
-
-        Button(
-            onClick = {
-                if (city.isBlank()) {
-                    message = "اكتب اسم المدينة"
-                    return@Button
-                }
-                loading = true
-                message = "Searching airports..."
-                searchAirports(city.trim()) { results, error ->
-                    airports = results
-                    message = error
-                    loading = false
-                }
-            },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !loading
-        ) {
-            Text(if (loading) "Searching..." else "SEARCH AIRPORTS")
+        item {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                label = { Text("Search ICAO / city / airport") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
         }
 
         if (message.isNotBlank()) {
-            Text(message, color = Muted)
+            item { Text(message, color = Muted) }
         }
 
-        airports.forEach { airport ->
+        if (listLoading || loading) {
+            item { CircularProgressIndicator(color = Accent) }
+        }
+
+        selectedAirport?.let { airport ->
+            item {
+                Text(
+                    "SELECTED: ${airport.name} (${airport.icao})",
+                    color = Accent,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        if (taf.isNotBlank()) {
+            item { WeatherCard("LIVE TAF", taf) }
+            item { Text("CLOUD PROFILE", color = Accent, fontWeight = FontWeight.Bold) }
+            item { CloudProfile(layers) }
+        } else if (selectedAirport != null && !loading) {
+            item { Text("No TAF available for this airport.", color = Muted) }
+        }
+
+        item {
+            Text(
+                "ALL ICAO CODES (${filtered.size})",
+                color = Accent,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        items(filtered) { airport ->
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable {
                         selectedAirport = airport
+                        taf = ""
+                        layers = emptyList()
                         loading = true
                         fetchWeather(airport.icao) { _, result, error ->
                             taf = result
@@ -380,34 +422,21 @@ fun CloudsScreen(modifier: Modifier = Modifier) {
                     },
                 colors = CardDefaults.cardColors(containerColor = Panel)
             ) {
-                Column(Modifier.padding(12.dp)) {
-                    Text(airport.name, color = White, fontWeight = FontWeight.Bold)
-                    Text("${airport.icao} - ${airport.city}", color = Muted)
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text("☁", color = Accent, fontSize = 22.sp)
+                    Column {
+                        Text(airport.icao, color = Accent, fontWeight = FontWeight.Bold)
+                        Text(airport.name, color = White)
+                        if (airport.city.isNotBlank()) {
+                            Text(airport.city, color = Muted, fontSize = 12.sp)
+                        }
+                    }
                 }
             }
-        }
-
-        selectedAirport?.let { airport ->
-            Text(
-                "SELECTED: ${airport.name} (${airport.icao})",
-                color = Accent,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
-        if (loading) {
-            CircularProgressIndicator(color = Accent)
-        }
-
-        if (taf.isNotBlank()) {
-            WeatherCard("LIVE TAF", taf)
-            Text("CLOUD PROFILE", color = Accent, fontWeight = FontWeight.Bold)
-            CloudProfile(layers)
-        } else if (selectedAirport == null) {
-            Text(
-                "Select an airport to load its cloud forecast.",
-                color = Muted
-            )
         }
     }
 }
@@ -638,60 +667,49 @@ private fun parseCsvLine(line: String): List<String> {
     return out
 }
 
-fun searchAirports(
-    city: String,
-    callback: (List<Airport>, String) -> Unit
-) {
+fun loadAirports(callback: (List<Airport>, String) -> Unit) {
+    airportsCache?.let {
+        callback(it, "")
+        return
+    }
+
     thread {
         try {
-            // Download once, then reuse (the file is large)
-            val all = airportsCache ?: run {
-                val url = URL(
-                    "https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/airports.csv"
-                )
-                val connection = url.openConnection() as HttpURLConnection
-                connection.connectTimeout = 20000
-                connection.readTimeout = 30000
-                val lines = try {
-                    connection.inputStream.bufferedReader().readLines()
-                } finally {
-                    connection.disconnect()
-                }
-
-                // Columns: 0 id, 1 ident, 2 type, 3 name, ..., 10 municipality,
-                // 11 scheduled_service, 12 icao_code, ...
-                val parsed = lines.drop(1).mapNotNull { line ->
-                    val f = parseCsvLine(line)
-                    if (f.size < 13) return@mapNotNull null
-
-                    val type = f[2]
-                    val scheduled = f[11]
-                    val icao = f[12].ifBlank { f[1] }
-
-                    if (
-                        (type == "large_airport" || type == "medium_airport") &&
-                        scheduled == "yes" &&
-                        icao.matches(Regex("[A-Z]{4}"))
-                    ) Airport(f[3], icao, f[10]) else null
-                }
-                airportsCache = parsed
-                parsed
+            val url = URL(
+                "https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/airports.csv"
+            )
+            val connection = url.openConnection() as HttpURLConnection
+            connection.connectTimeout = 20000
+            connection.readTimeout = 30000
+            val lines = try {
+                connection.inputStream.bufferedReader().readLines()
+            } finally {
+                connection.disconnect()
             }
 
-            val results = all.filter {
-                it.city.contains(city, ignoreCase = true) ||
-                        it.name.contains(city, ignoreCase = true)
-            }.take(30)
+            val validTypes = setOf("large_airport", "medium_airport", "small_airport")
+            val icaoRegex = Regex("[A-Z]{4}")
+
+            // Columns: 1 ident, 2 type, 3 name, 10 municipality, 12 icao_code
+            val parsed = lines.drop(1).mapNotNull { line ->
+                val f = parseCsvLine(line)
+                if (f.size < 13) return@mapNotNull null
+                if (f[2] !in validTypes) return@mapNotNull null
+
+                val icao = f[12].ifBlank { f[1] }
+                if (!icao.matches(icaoRegex)) return@mapNotNull null
+
+                Airport(f[3], icao, f[10])
+            }.distinctBy { it.icao }.sortedBy { it.icao }
+
+            airportsCache = parsed
 
             mainHandler.post {
-                callback(
-                    results,
-                    if (results.isEmpty()) "No airports found for this city." else ""
-                )
+                callback(parsed, if (parsed.isEmpty()) "No airports found." else "")
             }
         } catch (e: Exception) {
             mainHandler.post {
-                callback(emptyList(), "Airport search error: ${e.message}")
+                callback(emptyList(), "Airport list error: ${e.message}")
             }
         }
     }
