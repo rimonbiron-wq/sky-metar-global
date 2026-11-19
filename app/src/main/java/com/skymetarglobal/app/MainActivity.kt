@@ -10,12 +10,15 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.json.JSONArray
@@ -313,6 +316,7 @@ fun CategoryCard(result: MetarResult) {
 @Composable
 fun CloudsScreen(modifier: Modifier = Modifier) {
     var query by remember { mutableStateOf("") }
+    var appliedQuery by remember { mutableStateOf("") }
     var allAirports by remember { mutableStateOf(airportsCache ?: emptyList()) }
     var selectedAirport by remember { mutableStateOf<Airport?>(null) }
     var taf by remember { mutableStateOf("") }
@@ -334,8 +338,8 @@ fun CloudsScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    val filtered = remember(query, allAirports) {
-        val q = query.trim()
+    val filtered = remember(appliedQuery, allAirports) {
+        val q = appliedQuery.trim()
         if (q.isEmpty()) allAirports
         else allAirports.filter {
             it.icao.contains(q, ignoreCase = true) ||
@@ -364,10 +368,42 @@ fun CloudsScreen(modifier: Modifier = Modifier) {
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
-                label = { Text("Search ICAO / city / airport") },
+                label = { Text("ICAO / city / airport") },
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { appliedQuery = query.trim() })
             )
+        }
+
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = { appliedQuery = query.trim() },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("\uD83D\uDD0D RECHERCHE", fontWeight = FontWeight.Bold)
+                }
+
+                if (appliedQuery.isNotEmpty() || query.isNotEmpty()) {
+                    OutlinedButton(
+                        onClick = {
+                            query = ""
+                            appliedQuery = ""
+                        },
+                        modifier = Modifier.height(48.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("✕")
+                    }
+                }
+            }
         }
 
         if (message.isNotBlank()) {
