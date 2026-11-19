@@ -130,8 +130,8 @@ private val translations: Map<String, Map<Lang, String>> = mapOf(
     "taf_unreadable" to tr("Could not read the TAF time periods.", "Impossible de lire les périodes du TAF.", "تعذّر قراءة فترات TAF."),
     "clear" to tr("CLEAR", "DÉGAGÉ", "صافٍ"),
     "now" to tr("NOW", "MAINT.", "الآن"),
-    "clear_desc" to tr(t("clear_desc"), "Dégagé (SKC / NSC / CAVOK)", "سماء صافية (SKC / NSC / CAVOK)"),
-    "no_cloud" to tr(t("no_cloud"), "Aucune donnée de nuages", "لا توجد بيانات سحب"),
+    "clear_desc" to tr("Clear (SKC / NSC / CAVOK)", "Dégagé (SKC / NSC / CAVOK)", "سماء صافية (SKC / NSC / CAVOK)"),
+    "no_cloud" to tr("No cloud data", "Aucune donnée de nuages", "لا توجد بيانات سحب"),
     "cig" to tr("CIG", "PLAF.", "السقف")
 )
 
