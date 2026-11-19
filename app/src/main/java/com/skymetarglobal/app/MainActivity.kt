@@ -105,7 +105,7 @@ private fun tr(en: String, fr: String, ar: String): Map<Lang, String> =
 private val translations: Map<String, Map<Lang, String>> = mapOf(
     "subtitle" to tr("GLOBAL AVIATION WEATHER", "MÉTÉO AÉRONAUTIQUE MONDIALE", "الطقس الجوي العالمي"),
     "tab_clouds" to tr("CLOUDS", "NUAGES", "السحب"),
-    "tab_calc" to tr("TOOLS", "OUTILS", "الأدوات"),
+    "tab_calc" to tr("CALCULATOR", "CALCULATRICE", "الحاسبة"),
     "metar_weather" to tr("METAR WEATHER", "MÉTÉO METAR", "طقس METAR"),
     "station_label" to tr("ICAO Station (e.g. GMMG)", "Station OACI (ex. GMMG)", "محطة ICAO (مثال GMMG)"),
     "btn_live" to tr("LIVE METAR + TAF", "METAR + TAF EN DIRECT", "METAR + TAF مباشر"),
@@ -559,7 +559,7 @@ private fun BottomBar(selected: String, onSelect: (String) -> Unit) {
     val items = listOf(
         Triple("METAR", "📡", "METAR & TAF"),
         Triple("CLOUDS", "☁", t("tab_clouds")),
-        Triple("CALC", "🛠️", t("tab_calc"))
+        Triple("CALC", "", t("tab_calc"))
     )
     NavigationBar(
         containerColor = Color(0xFF0A1810),
@@ -569,7 +569,15 @@ private fun BottomBar(selected: String, onSelect: (String) -> Unit) {
             NavigationBarItem(
                 selected = selected == id,
                 onClick = { onSelect(id) },
-                icon = { Text(icon, fontSize = 22.sp) },
+                icon = {
+                    when (id) {
+                        // drawn calculator icon (like the classic app icon), never mirrored in Arabic
+                        "CALC" -> CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                            CalcBadgeIcon()
+                        }
+                        else -> Text(icon, fontSize = 22.sp)
+                    }
+                },
                 label = {
                     Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                 },
@@ -580,6 +588,50 @@ private fun BottomBar(selected: String, onSelect: (String) -> Unit) {
                 )
             )
         }
+    }
+}
+
+/** Mini calculator app icon (2×2 keys with an orange "="), drawn in code so no image resource is needed. */
+@Composable
+private fun CalcBadgeIcon(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .size(26.dp)
+            .clip(RoundedCornerShape(7.dp))
+            .background(Color(0xFFD9D6D0))
+            .border(0.5.dp, Color(0xFFA9A49B), RoundedCornerShape(7.dp))
+            .padding(2.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(1.5.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp)) {
+                CalcKeyMini("+", Color(0xFFFDFCFA))
+                CalcKeyMini("%", Color(0xFFFDFCFA))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp)) {
+                CalcKeyMini("×", Color(0xFFFDFCFA))
+                CalcKeyMini("=", Color(0xFFF09A47))
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalcKeyMini(symbol: String, bg: Color) {
+    Box(
+        modifier = Modifier
+            .size(9.5.dp)
+            .clip(RoundedCornerShape(2.5.dp))
+            .background(bg),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            symbol,
+            fontSize = 7.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFF1A1B1D),
+            maxLines = 1
+        )
     }
 }
 
