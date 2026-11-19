@@ -1,1086 +1,654 @@
 package com.skymetarglobal.app
 
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
+import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
-import java.text.SimpleDateFormat
-import java.util.*
+import kotlin.concurrent.thread
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { SkyMetarApp() }
+
+        window.statusBarColor = android.graphics.Color.rgb(8, 17, 35)
+        window.navigationBarColor = android.graphics.Color.rgb(8, 17, 35)
+
+        setContent {
+            SkyMetarApp()
+        }
     }
 }
 
+private val Background = Color(0xFF081323)
+private val Panel = Color(0xFF13243A)
+private val Accent = Color(0xFF35B9E9)
+private val White = Color(0xFFF4F7FC)
+private val Muted = Color(0xFF9EADC0)
+
+data class MetarResult(
+    val station: String,
+    val raw: String,
+    val visibility: Double?,
+    val ceiling: Int?,
+    val category: String,
+    val color: Color
+)
+
 data class CloudLayer(
-    val code: String,
-    val oktas: String,
-    val height: Int?,
+    val amount: String,
+    val altitude: Int,
     val type: String = ""
 )
 
-data class CloudAnalysis(
-    val layers: List<CloudLayer>,
-    val ceiling: Int?,
-    val unknownCeiling: Boolean
-)
-
-data class Category(
+data class Airport(
     val name: String,
-    val color: Color,
-    val visibility: Double,
-    val ceiling: Int
+    val icao: String,
+    val city: String
 )
-
-data class ForecastCloud(
-    val cover: String,
-    val baseFt: Int?,
-    val type: String
-)
-
-data class HourCloudForecast(
-    val time: String,
-    val layers: List<ForecastCloud>,
-    val ceilingFt: Int?,
-    val available: Boolean
-)
-
-data class ManualSegment(
-    val start: Long,
-    val layers: List<ForecastCloud>,
-    val clear: Boolean
-)
-
-val categories = listOf(
-    Category("BLUE", Color(0xFF168BFF), 8.0, 2500),
-    Category("GREEN", Color(0xFF19A65A), 5.0, 1500),
-    Category("GREEN / YELLOW", Color(0xFF9ACD32), 5.0, 1000),
-    Category("YELLOW", Color(0xFFFFD21F), 3.0, 500),
-    Category("YELLOW / RED", Color(0xFFFF9B21), 1.5, 350),
-    Category("RED", Color(0xFFE53935), 1.0, 220),
-    Category("GREY", Color(0xFF777777), 0.0, 0)
-)
-
-fun parseNumber(value: String): Double? {
-    if (value.isEmpty() || value == "////") return null
-    val sign = if (value.startsWith("M")) -1.0 else 1.0
-    return value.removePrefix("M").toDoubleOrNull()?.times(sign)
-}
-
-fun parseVisibility(raw: String): Double? {
-    val tokens = raw.uppercase(Locale.US).trim().split(Regex("\\s+"))
-    if ("CAVOK" in tokens) return 10.0
-
-    val windIndex = tokens.indexOfFirst {
-        it.matches(Regex("""(?:\d{3}|VRB)\d{2,3}(?:G\d{2,3})?KT"""))
-    }
-    val start = if (windIndex >= 0) windIndex + 1 else 0
-
-    for (i in start until tokens.size) {
-        val token = tokens[i]
-
-        if (token.matches(Regex("\\d{4}"))) {
-            val meters = token.toInt()
-            return if (meters == 9999) 10.0 else meters / 1000.0
-        }
-
-        if (token.endsWith("SM")) {
-            var value = token.removeSuffix("SM")
-            val whole = if (i > 0 && tokens[i - 1].matches(Regex("\\d+"))) {
-                tokens[i - 1].toDoubleOrNull() ?: 0.0
-            } else 0.0
-
-            value = value.removePrefix("P").removePrefix("M")
-
-            val miles = if (value.contains("/")) {
-                val parts = value.split("/")
-                if (parts.size != 2) return null
-                val n = parts[0].toDoubleOrNull() ?: return null
-                val d = parts[1].toDoubleOrNull() ?: return null
-                if (d == 0.0) return null
-                whole + n / d
-            } else {
-                value.toDoubleOrNull() ?: continue
-            }
-            return miles * 1.60934
-        }
-    }
-    return null
-}
-
-fun cloudLayersFromText(raw: String): List<ForecastCloud> {
-    val regex = Regex(
-        """(?<![A-Z0-9])(?:FEW|SCT|BKN|OVC)(?:\d{3}|///)(?:CB|TCU)?|(?<![A-Z0-9])VV(?:\d{3}|///)"""
-    )
-
-    return regex.findAll(raw.uppercase(Locale.US)).map { match ->
-        val token = match.value
-        val code = if (token.startsWith("VV")) "VV" else token.take(3)
-        val heightText = if (code == "VV") token.substring(2, 5)
-                         else token.substring(3, 6)
-        val height = heightText.toIntOrNull()?.times(100)
-        val type = when {
-            token.endsWith("CB") -> "CB"
-            token.endsWith("TCU") -> "TCU"
-            else -> "Not specified"
-        }
-        ForecastCloud(code, height, type)
-    }.toList()
-}
-
-fun analyzeClouds(raw: String): CloudAnalysis {
-    val layers = cloudLayersFromText(raw).map {
-        val oktas = when (it.cover) {
-            "FEW" -> "1–2 OKTAS"
-            "SCT" -> "3–4 OKTAS"
-            "BKN" -> "5–7 OKTAS"
-            "OVC" -> "8 OKTAS"
-            else -> "VERTICAL VISIBILITY"
-        }
-        CloudLayer(it.cover, oktas, it.baseFt, it.type)
-    }
-
-    val ceilingLayers = layers.filter {
-        it.code == "BKN" || it.code == "OVC" || it.code == "VV"
-    }
-
-    return CloudAnalysis(
-        layers,
-        ceilingLayers.mapNotNull { it.height }.minOrNull(),
-        ceilingLayers.any { it.height == null }
-    )
-}
-
-fun classifyMetar(visibility: Double?, clouds: CloudAnalysis): Category? {
-    if (visibility == null || clouds.unknownCeiling) return null
-    val ceiling = clouds.ceiling ?: Int.MAX_VALUE
-
-    return categories.firstOrNull {
-        visibility >= it.visibility && ceiling >= it.ceiling
-    } ?: categories.last()
-}
-
-fun extractWind(raw: String): String =
-    Regex("""(?:\d{3}|VRB)\d{2,3}(?:G\d{2,3})?KT""")
-        .find(raw.uppercase(Locale.US))?.value ?: "Unavailable"
-
-fun extractTemperature(raw: String): Pair<String, String> {
-    val match = Regex("""(?<![A-Z0-9])(M?\d{2})/(M?\d{2})(?![A-Z0-9])""")
-        .find(raw.uppercase(Locale.US)) ?: return Pair("—", "—")
-    val t = parseNumber(match.groupValues[1])
-    val d = parseNumber(match.groupValues[2])
-    return Pair(t?.let { "$it °C" } ?: "—", d?.let { "$it °C" } ?: "—")
-}
-
-fun extractPressure(raw: String): String {
-    val qnh = Regex("""(?<![A-Z0-9])Q\d{4}""")
-        .find(raw.uppercase(Locale.US))
-    if (qnh != null) return "${qnh.value} hPa"
-    return Regex("""(?<![A-Z0-9])A\d{4}""")
-        .find(raw.uppercase(Locale.US))?.value ?: "Unavailable"
-}
-
-fun extractObservation(raw: String): String =
-    Regex("""(?<!\d)\d{6}Z""").find(raw.uppercase(Locale.US))?.value ?: "Unavailable"
-
-fun utcFormat(epoch: Long): String {
-    val sdf = SimpleDateFormat("HH:mm 'UTC'", Locale.US)
-    sdf.timeZone = TimeZone.getTimeZone("UTC")
-    return sdf.format(Date(epoch * 1000L))
-}
-
-fun jsonClouds(item: JSONObject): List<ForecastCloud> {
-    val array = item.optJSONArray("clouds") ?: JSONArray()
-    val result = mutableListOf<ForecastCloud>()
-
-    for (i in 0 until array.length()) {
-        val cloud = array.optJSONObject(i) ?: continue
-        val cover = cloud.optString("cover", "—")
-        val base = if (cloud.isNull("base")) null else cloud.optInt("base")
-        val type = cloud.optString("type", "Not specified")
-        result.add(ForecastCloud(cover, base, type))
-    }
-    return result
-}
-
-fun ceilingOf(layers: List<ForecastCloud>, item: JSONObject? = null): Int? {
-    val vv = item?.optInt("vertVis", -1) ?: -1
-    if (vv >= 0) return vv
-
-    return layers.filter {
-        it.cover == "BKN" || it.cover == "OVC" || it.cover == "VV"
-    }.mapNotNull { it.baseFt }.minOrNull()
-}
-
-fun fetchTafForecast(
-    code: String,
-    callback: (List<HourCloudForecast>, String) -> Unit
-) {
-    Thread {
-        var connection: HttpURLConnection? = null
-        try {
-            val url = URL(
-                "https://aviationweather.gov/api/data/taf?ids=$code&format=json"
-            )
-            connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 15000
-            connection.readTimeout = 15000
-            connection.setRequestProperty("User-Agent", "SKY-METAR-GLOBAL/1.0")
-
-            val response = connection.responseCode
-            if (response !in 200..299) {
-                callback(emptyList(), "TAF HTTP error: $response")
-                return@Thread
-            }
-
-            val body = connection.inputStream.bufferedReader().use { it.readText() }
-            val array = JSONArray(body)
-
-            if (array.length() == 0) {
-                callback(emptyList(), "No TAF available for $code")
-                return@Thread
-            }
-
-            val taf = array.getJSONObject(0)
-            val periods = taf.optJSONArray("fcsts") ?: JSONArray()
-            val now = System.currentTimeMillis() / 1000L
-            val forecasts = mutableListOf<HourCloudForecast>()
-
-            for (hour in 0..7) {
-                val target = now + hour * 3600L
-                var selected: JSONObject? = null
-
-                for (i in 0 until periods.length()) {
-                    val period = periods.optJSONObject(i) ?: continue
-                    val from = period.optLong("timeFrom", 0L)
-                    val to = period.optLong("timeTo", 0L)
-                    if (from <= target && target < to) selected = period
-                }
-
-                if (selected == null) {
-                    forecasts.add(
-                        HourCloudForecast(utcFormat(target), emptyList(), null, false)
-                    )
-                } else {
-                    val layers = jsonClouds(selected)
-                    forecasts.add(
-                        HourCloudForecast(
-                            utcFormat(target),
-                            layers,
-                            ceilingOf(layers, selected),
-                            true
-                        )
-                    )
-                }
-            }
-
-            callback(forecasts, "TAF forecast loaded")
-        } catch (e: Exception) {
-            callback(emptyList(), "TAF error: ${e.message}")
-        } finally {
-            connection?.disconnect()
-        }
-    }.start()
-}
-
-fun resolveTafTime(day: Int, hour: Int, reference: Long): Long {
-    val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
-    cal.timeInMillis = reference * 1000L
-    cal.set(Calendar.DAY_OF_MONTH, 1)
-    cal.set(Calendar.HOUR_OF_DAY, hour.coerceIn(0, 23))
-    cal.set(Calendar.MINUTE, 0)
-    cal.set(Calendar.SECOND, 0)
-    cal.set(Calendar.MILLISECOND, 0)
-    cal.set(
-        Calendar.DAY_OF_MONTH,
-        day.coerceIn(1, cal.getActualMaximum(Calendar.DAY_OF_MONTH))
-    )
-
-    var value = cal.timeInMillis / 1000L
-    val diff = value - reference
-
-    if (diff > 15L * 86400L) {
-        cal.add(Calendar.MONTH, -1)
-        value = cal.timeInMillis / 1000L
-    } else if (diff < -15L * 86400L) {
-        cal.add(Calendar.MONTH, 1)
-        value = cal.timeInMillis / 1000L
-    }
-    return value
-}
-
-fun parseManualTaf(raw: String): List<HourCloudForecast> {
-    val text = raw.uppercase(Locale.US).replace("\n", " ").trim()
-    val validity = Regex("""\b(\d{2})(\d{2})/(\d{2})(\d{2})\b""")
-        .find(text) ?: return emptyList()
-
-    val now = System.currentTimeMillis() / 1000L
-    val start = resolveTafTime(
-        validity.groupValues[1].toInt(),
-        validity.groupValues[2].toInt(),
-        now
-    )
-
-    var end = resolveTafTime(
-        validity.groupValues[3].toInt(),
-        validity.groupValues[4].toInt(),
-        start
-    )
-    if (end <= start) end += 86400L
-
-    val markers = Regex("""\bFM(\d{2})(\d{2})(\d{2})\b""")
-        .findAll(text).toList()
-
-    val segments = mutableListOf<ManualSegment>()
-    val firstEnd = markers.firstOrNull()?.range?.first ?: text.length
-    val initialText = text.substring(validity.range.last + 1, firstEnd)
-
-    segments.add(
-        ManualSegment(
-            start,
-            cloudLayersFromText(initialText),
-            Regex("""\b(SKC|CLR|NSC|NCD)\b""").containsMatchIn(initialText)
-        )
-    )
-
-    markers.forEachIndexed { index, marker ->
-        val day = marker.groupValues[1].toInt()
-        val hour = marker.groupValues[2].toInt()
-        val minute = marker.groupValues[3].toInt()
-        val segmentStart = resolveTafTime(day, hour, now) + minute * 60L
-        val nextEnd = markers.getOrNull(index + 1)?.range?.first ?: text.length
-        val block = text.substring(marker.range.last + 1, nextEnd)
-
-        segments.add(
-            ManualSegment(
-                segmentStart,
-                cloudLayersFromText(block),
-                Regex("""\b(SKC|CLR|NSC|NCD)\b""").containsMatchIn(block)
-            )
-        )
-    }
-
-    val sorted = segments.sortedBy { it.start }
-    var inherited = emptyList<ForecastCloud>()
-    var inheritedClear = false
-
-    val effective = sorted.map { segment ->
-        if (segment.layers.isNotEmpty() || segment.clear) {
-            inherited = segment.layers
-            inheritedClear = segment.clear
-        }
-        Pair(segment.start, if (inheritedClear) emptyList() else inherited)
-    }
-
-    val output = mutableListOf<HourCloudForecast>()
-
-    for (hour in 0..7) {
-        val target = now + hour * 3600L
-        val chosen = effective.lastOrNull { it.first <= target }
-        val available = target >= start && target < end && chosen != null
-        val layers = if (available) chosen!!.second else emptyList()
-
-        output.add(
-            HourCloudForecast(
-                utcFormat(target),
-                layers,
-                ceilingOf(layers),
-                available
-            )
-        )
-    }
-    return output
-}
-
-/* PROFESSIONAL CLOUD PROFILE */
 
 @Composable
-fun CloudProfileChart(forecast: List<HourCloudForecast>) {
-    val gridColor = Color(0xFF456078)
-    val maxHeightFt = 12000f
+fun SkyMetarApp() {
+    var selectedTab by remember { mutableStateOf("METAR & TAF") }
+
+    MaterialTheme(
+        colorScheme = darkColorScheme(
+            background = Background,
+            surface = Panel,
+            primary = Accent,
+            onBackground = White,
+            onSurface = White
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Background)
+        ) {
+            Header()
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                TabButton(
+                    text = "METAR & TAF",
+                    selected = selectedTab == "METAR & TAF",
+                    modifier = Modifier.weight(1f)
+                ) {
+                    selectedTab = "METAR & TAF"
+                }
+
+                TabButton(
+                    text = "CLOUDS",
+                    selected = selectedTab == "CLOUDS",
+                    modifier = Modifier.weight(1f)
+                ) {
+                    selectedTab = "CLOUDS"
+                }
+            }
+
+            when (selectedTab) {
+                "METAR & TAF" -> MetarTafScreen()
+                "CLOUDS" -> CloudsScreen()
+            }
+        }
+    }
+}
+
+@Composable
+fun Header() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF0D1D32))
+            .padding(18.dp)
+    ) {
+        Text(
+            text = "SKY METAR GLOBAL",
+            fontSize = 22.sp,
+            fontWeight = FontWeight.Bold,
+            color = White
+        )
+
+        Text(
+            text = "GLOBAL AVIATION WEATHER",
+            fontSize = 11.sp,
+            color = Accent,
+            letterSpacing = 2.sp
+        )
+    }
+}
+
+@Composable
+fun TabButton(
+    text: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        modifier = modifier.height(48.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (selected) Accent else Panel,
+            contentColor = if (selected) Background else White
+        )
+    ) {
+        Text(text, fontWeight = FontWeight.Bold)
+    }
+}
+@Composable
+fun MetarTafScreen() {
+    var station by remember { mutableStateOf("GMMG") }
+    var manualMetar by remember { mutableStateOf("") }
+    var manualTaf by remember { mutableStateOf("") }
+    var metarResult by remember { mutableStateOf<MetarResult?>(null) }
+    var liveMetar by remember { mutableStateOf("") }
+    var liveTaf by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf("") }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text("METAR WEATHER", color = Accent, fontWeight = FontWeight.Bold)
+
+        OutlinedTextField(
+            value = station,
+            onValueChange = { station = it.uppercase(Locale.US) },
+            label = { Text("ICAO Station (مثال GMMG)") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+
+        Button(
+            onClick = {
+                loading = true
+                message = "جاري البحث..."
+                fetchWeather(station.trim()) { metar, taf, error ->
+                    liveMetar = metar
+                    liveTaf = taf
+                    metarResult = if (metar.isNotBlank()) parseMetar(metar) else null
+                    message = error
+                    loading = false
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !loading
+        ) {
+            Text(if (loading) "Loading..." else "LIVE METAR + TAF")
+        }
+
+        if (message.isNotBlank()) {
+            Text(message, color = Muted)
+        }
+
+        if (liveMetar.isNotBlank()) {
+            WeatherCard("LIVE METAR", liveMetar)
+        }
+
+        metarResult?.let {
+            CategoryCard(it)
+        }
+
+        HorizontalDivider(color = Muted.copy(alpha = 0.3f))
+
+        Text("MANUAL METAR", color = Accent, fontWeight = FontWeight.Bold)
+
+        OutlinedTextField(
+            value = manualMetar,
+            onValueChange = { manualMetar = it },
+            label = { Text("Paste METAR here") },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 3
+        )
+
+        Button(
+            onClick = {
+                metarResult = parseMetar(manualMetar)
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("ANALYZE METAR")
+        }
+
+        metarResult?.let {
+            CategoryCard(it)
+        }
+
+        HorizontalDivider(color = Muted.copy(alpha = 0.3f))
+
+        Text("LIVE TAF", color = Accent, fontWeight = FontWeight.Bold)
+
+        if (liveTaf.isNotBlank()) {
+            WeatherCard("TAF FORECAST", liveTaf)
+        } else {
+            Text("Search an ICAO station to load its TAF.", color = Muted)
+        }
+
+        Text("MANUAL TAF", color = Accent, fontWeight = FontWeight.Bold)
+
+        OutlinedTextField(
+            value = manualTaf,
+            onValueChange = { manualTaf = it },
+            label = { Text("Paste TAF here") },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 4
+        )
+
+        Button(
+            onClick = {
+                liveTaf = manualTaf
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("DISPLAY MANUAL TAF")
+        }
+    }
+}
+
+@Composable
+fun WeatherCard(title: String, value: String) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Panel),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Text(title, color = Accent, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Text(value, color = White, fontSize = 14.sp)
+        }
+    }
+}
+
+@Composable
+fun CategoryCard(result: MetarResult) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = result.color),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                result.category,
+                color = Color.Black,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text("Station: ${result.station}", color = Color.Black)
+            Text(
+                "Visibility: ${result.visibility ?: "Unknown"} km",
+                color = Color.Black
+            )
+            Text(
+                "Ceiling: ${result.ceiling?.let { "$it ft" } ?: "Unknown"}",
+                color = Color.Black
+            )
+        }
+    }
+    @Composable
+fun CloudsScreen() {
+    var city by remember { mutableStateOf("") }
+    var airports by remember { mutableStateOf(listOf<Airport>()) }
+    var selectedAirport by remember { mutableStateOf<Airport?>(null) }
+    var taf by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf("") }
+    var layers by remember { mutableStateOf(listOf<CloudLayer>()) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            "CLOUD FORECAST",
+            color = Accent,
+            fontWeight = FontWeight.Bold,
+            fontSize = 19.sp
+        )
+
+        OutlinedTextField(
+            value = city,
+            onValueChange = { city = it },
+            label = { Text("Search city worldwide") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+
+        Button(
+            onClick = {
+                loading = true
+                message = "Searching airports..."
+                searchAirports(city) { results, error ->
+                    airports = results
+                    message = error
+                    loading = false
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !loading
+        ) {
+            Text(if (loading) "Searching..." else "SEARCH AIRPORTS")
+        }
+
+        if (message.isNotBlank()) {
+            Text(message, color = Muted)
+        }
+
+        airports.forEach { airport ->
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        selectedAirport = airport
+                        loading = true
+                        fetchWeather(airport.icao) { _, result, error ->
+                            taf = result
+                            layers = parseCloudLayers(result)
+                            message = error
+                            loading = false
+                        }
+                    },
+                colors = CardDefaults.cardColors(containerColor = Panel)
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(airport.name, color = White, fontWeight = FontWeight.Bold)
+                    Text("${airport.city} • ${airport.icao}", color = Muted)
+                }
+            }
+        }
+
+        selectedAirport?.let { airport ->
+            Text(
+                "SELECTED: ${airport.name} (${airport.icao})",
+                color = Accent,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        if (loading) {
+            CircularProgressIndicator(color = Accent)
+        }
+
+        if (taf.isNotBlank()) {
+            WeatherCard("LIVE TAF", taf)
+            Text("CLOUD PROFILE", color = Accent, fontWeight = FontWeight.Bold)
+            CloudProfile(layers)
+        } else {
+            Text(
+                "Select an airport to load its cloud forecast.",
+                color = Muted
+            )
+        }
+    }
+}
+
+@Composable
+fun CloudProfile(layers: List<CloudLayer>) {
+    val maxAltitude = 20000
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFF102638), RoundedCornerShape(16.dp))
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+            .background(Panel, RoundedCornerShape(14.dp))
+            .padding(12.dp)
     ) {
-        Text(
-            "CLOUD VERTICAL PROFILE",
-            color = Color.White,
-            fontWeight = FontWeight.Bold
-        )
+        Text("Altitude (ft)", color = Accent, fontWeight = FontWeight.Bold)
 
-        Text(
-            "Cloud base height • Feet AGL • UTC",
-            color = Color(0xFF9EB4C8),
-            fontSize = 11.sp
-        )
+        val marks = listOf(20000, 15000, 10000, 5000, 0)
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            listOf("12k", "9k", "6k", "3k", "0").forEach {
-                Text(it, color = Color(0xFFB9D9F2), fontSize = 10.sp)
-            }
-        }
-
-        Canvas(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(220.dp)
-        ) {
-            val left = 8f
-            val right = size.width - 8f
-            val top = 8f
-            val bottom = size.height - 8f
-            val chartHeight = bottom - top
-            val chartWidth = right - left
-
-            for (level in 0..4) {
-                val y = top + chartHeight * level / 4f
-                drawLine(
-                    color = gridColor,
-                    start = Offset(left, y),
-                    end = Offset(right, y),
-                    strokeWidth = 1.dp.toPx()
+        marks.forEach { altitude ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(42.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    altitude.toString(),
+                    color = Muted,
+                    modifier = Modifier.width(60.dp),
+                    fontSize = 11.sp
                 )
-            }
 
-            for (hour in 0..7) {
-                val x = left + chartWidth * hour / 7f
-                drawLine(
-                    color = gridColor.copy(alpha = 0.55f),
-                    start = Offset(x, top),
-                    end = Offset(x, bottom),
-                    strokeWidth = 1.dp.toPx()
-                )
-            }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                ) {
+                    HorizontalDivider(
+                        modifier = Modifier.align(Alignment.Center),
+                        color = Muted.copy(alpha = 0.2f)
+                    )
 
-            forecast.forEachIndexed { index, hour ->
-                if (!hour.available) return@forEachIndexed
-
-                val x = left + chartWidth * index / 7f
-
-                hour.layers.forEachIndexed { layerIndex, layer ->
-                    val base = layer.baseFt ?: return@forEachIndexed
-                    val y = bottom -
-                        (base.coerceIn(0, 12000) / maxHeightFt) * chartHeight
-
-                    val color = when (layer.cover) {
-                        "FEW" -> Color(0xFF70C8FF)
-                        "SCT" -> Color(0xFF9AC7E8)
-                        "BKN" -> Color(0xFFB2BEC9)
-                        "OVC" -> Color(0xFF71869B)
-                        "VV" -> Color(0xFFB48EDE)
-                        else -> Color(0xFFB9D9F2)
+                    layers.filter {
+                        (it.altitude / 5000) * 5000 == altitude
+                    }.forEach {
+                        Text(
+                            "${it.amount} ${it.type}",
+                            color = Accent,
+                            modifier = Modifier.align(Alignment.CenterStart),
+                            fontWeight = FontWeight.Bold
+                        )
                     }
-
-                    val radius = 7.dp.toPx()
-                    val cloudY = y - layerIndex * 13.dp.toPx()
-
-                    drawCircle(
-                        color = color,
-                        radius = radius,
-                        center = Offset(x - 8.dp.toPx(), cloudY)
-                    )
-                    drawCircle(
-                        color = color,
-                        radius = radius * 1.25f,
-                        center = Offset(x, cloudY - 3.dp.toPx())
-                    )
-                    drawCircle(
-                        color = color,
-                        radius = radius * 0.9f,
-                        center = Offset(x + 9.dp.toPx(), cloudY)
-                    )
-                    drawLine(
-                        color = color,
-                        start = Offset(x - 12.dp.toPx(), cloudY + 5.dp.toPx()),
-                        end = Offset(x + 12.dp.toPx(), cloudY + 5.dp.toPx()),
-                        strokeWidth = 3.dp.toPx()
-                    )
-                }
-            }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            forecast.forEachIndexed { index, hour ->
-                if (index % 2 == 0) {
-                    Text(
-                        hour.time,
-                        color = Color(0xFFB9D9F2),
-                        fontSize = 9.sp
-                    )
                 }
             }
         }
 
         Text(
-            "Cloud symbols use reported cloud-base heights.",
-            color = Color(0xFF9EB4C8),
-            fontSize = 10.sp
+            "UTC time → Forecast layers from available TAF",
+            color = Muted,
+            fontSize = 11.sp
         )
     }
 }
+}
+fun fetchWeather(
+    station: String,
+    callback: (String, String, String) -> Unit
+) {
+    thread {
+        try {
+            val metarUrl =
+                URL("https://aviationweather.gov/api/data/metar?ids=$station&format=json")
 
-@Composable
-fun SkyMetarApp() {
-    val handler = remember { Handler(Looper.getMainLooper()) }
+            val tafUrl =
+                URL("https://aviationweather.gov/api/data/taf?ids=$station&format=json")
 
-    var mode by remember { mutableStateOf("LIVE") }
-    var station by remember { mutableStateOf("GMMN") }
-    var manualReport by remember { mutableStateOf("") }
-    var manualTaf by remember { mutableStateOf("") }
-
-    var loading by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf("Ready") }
-
-    var airport by remember { mutableStateOf("") }
-    var rawReport by remember { mutableStateOf("") }
-    var observation by remember { mutableStateOf("—") }
-
-    var temperature by remember { mutableStateOf("—") }
-    var dewpoint by remember { mutableStateOf("—") }
-    var wind by remember { mutableStateOf("—") }
-    var visibility by remember { mutableStateOf("—") }
-    var pressure by remember { mutableStateOf("—") }
-
-    var clouds by remember {
-        mutableStateOf(CloudAnalysis(emptyList(), null, false))
-    }
-
-    var finalCategory by remember { mutableStateOf<Category?>(null) }
-    var forecast by remember { mutableStateOf(emptyList<HourCloudForecast>()) }
-    var forecastStatus by remember { mutableStateOf("TAF forecast not loaded") }
-    var tafMode by remember { mutableStateOf("LIVE") }
-
-    val background = Color(0xFF081522)
-    val panel = Color(0xFF102638)
-    val white = Color.White
-    val muted = Color(0xFF9EB4C8)
-
-    fun resetResults() {
-        airport = ""
-        rawReport = ""
-        finalCategory = null
-        clouds = CloudAnalysis(emptyList(), null, false)
-    }
-
-    fun displayReport(raw: String, name: String, time: String) {
-        val report = raw.uppercase(Locale.US).trim()
-        if (report.isEmpty()) {
-            status = "Empty METAR report"
-            return
-        }
-
-        val vis = parseVisibility(report)
-        val cloudResult = analyzeClouds(report)
-        val category = classifyMetar(vis, cloudResult)
-        val temps = extractTemperature(report)
-
-        airport = name
-        rawReport = report
-        observation = time
-        temperature = temps.first
-        dewpoint = temps.second
-        wind = extractWind(report)
-        pressure = extractPressure(report)
-        visibility = vis?.let {
-            String.format(Locale.US, "%.2f km", it)
-        } ?: "Unavailable"
-
-        clouds = cloudResult
-        finalCategory = category
-        status = if (category == null) {
-            "METAR loaded - some data unavailable"
-        } else {
-            "METAR analysis completed"
-        }
-    }
-
-    fun searchLiveMetar() {
-        val code = station.trim().uppercase(Locale.US)
-
-        if (!code.matches(Regex("[A-Z0-9]{4}"))) {
-            status = "Enter a valid 4-character ICAO code"
-            return
-        }
-
-        loading = true
-        status = "Downloading METAR..."
-        resetResults()
-
-        Thread {
-            var connection: HttpURLConnection? = null
-            try {
-                val address =
-                    "https://aviationweather.gov/api/data/metar?ids=$code&format=json"
-
-                connection = URL(address).openConnection() as HttpURLConnection
+            fun download(url: URL): String {
+                val connection = url.openConnection() as HttpURLConnection
                 connection.connectTimeout = 15000
                 connection.readTimeout = 15000
-                connection.setRequestProperty("User-Agent", "SKY-METAR-GLOBAL/1.0")
-
-                val response = connection.responseCode
-                if (response !in 200..299) {
-                    handler.post {
-                        status = "METAR HTTP error: $response"
-                        loading = false
-                    }
-                    return@Thread
+                connection.setRequestProperty("User-Agent", "SkyMetarGlobal")
+                return try {
+                    connection.inputStream.bufferedReader().use { it.readText() }
+                } finally {
+                    connection.disconnect()
                 }
-
-                val body = connection.inputStream.bufferedReader().use { it.readText() }
-                val data = JSONArray(body)
-
-                if (data.length() == 0) {
-                    handler.post {
-                        status = "No METAR found for $code"
-                        loading = false
-                    }
-                    return@Thread
-                }
-
-                val item = data.getJSONObject(0)
-                val name = item.optString("name", code)
-                val raw = item.optString("rawOb", "")
-                val timestamp = item.optLong("obsTime", 0L)
-
-                val time = if (timestamp > 0L) {
-                    val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm 'UTC'", Locale.US)
-                    sdf.timeZone = TimeZone.getTimeZone("UTC")
-                    sdf.format(Date(timestamp * 1000L))
-                } else extractObservation(raw)
-
-                handler.post {
-                    displayReport(raw, name, time)
-                    loading = false
-                }
-            } catch (e: Exception) {
-                handler.post {
-                    status = "Connection error: ${e.message}"
-                    loading = false
-                }
-            } finally {
-                connection?.disconnect()
             }
-        }.start()
-    }
 
-    fun analyzeManualMetar() {
-        val raw = manualReport.trim()
-        if (raw.isEmpty()) {
-            status = "Please enter a METAR report"
-            return
-        }
+            val metarJson = download(metarUrl)
+            val tafJson = download(tafUrl)
 
-        resetResults()
-        val code = Regex("""(?:^|\s)([A-Z]{4})(?=\s)""")
-            .find(raw.uppercase(Locale.US))
-            ?.groupValues?.get(1) ?: "MANUAL REPORT"
+            val metar = JSONArray(metarJson)
+            val taf = JSONArray(tafJson)
 
-        displayReport(raw, code, extractObservation(raw))
-    }
+            val metarText = if (metar.length() > 0) {
+                metar.getJSONObject(0).optString("rawOb", "")
+            } else ""
 
-    fun searchLiveTaf() {
-        val code = station.trim().uppercase(Locale.US)
+            val tafText = if (taf.length() > 0) {
+                taf.getJSONObject(0).optString("rawTAF", "")
+            } else ""
 
-        if (!code.matches(Regex("[A-Z0-9]{4}"))) {
-            forecastStatus = "Enter a valid 4-character ICAO code"
-            return
-        }
-
-        loading = true
-        forecastStatus = "Downloading TAF..."
-
-        fetchTafForecast(code) { result, message ->
-            handler.post {
-                forecast = result
-                forecastStatus = message
-                loading = false
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                callback(
+                    metarText,
+                    tafText,
+                    if (metarText.isBlank() && tafText.isBlank())
+                        "No METAR or TAF found for $station"
+                    else ""
+                )
+            }
+        } catch (e: Exception) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                callback("", "", "Network error: ${e.message}")
             }
         }
     }
+}
 
-    fun analyzeManualTaf() {
-        val raw = manualTaf.trim()
-        if (raw.isEmpty()) {
-            forecastStatus = "Please enter a TAF report"
-            return
+fun parseMetar(raw: String): MetarResult {
+    val text = raw.uppercase(Locale.US)
+    val station = Regex("\\b[A-Z]{4}\\b")
+        .find(text)?.value ?: "UNKNOWN"
+
+    val visibilityMatch =
+        Regex("\\b(\\d{4})\\b").findAll(text).lastOrNull()
+
+    val visibility = visibilityMatch?.value?.toDoubleOrNull()?.let {
+        if (it == 9999.0) 10.0 else it / 1000.0
+    }
+
+    val cloudHeights = Regex("\\b(?:BKN|OVC|VV)(\\d{3})\\b")
+        .findAll(text)
+        .mapNotNull { it.groupValues[1].toIntOrNull()?.times(100) }
+        .toList()
+
+    val ceiling = cloudHeights.minOrNull()
+
+    val category: String
+    val color: Color
+
+    when {
+        visibility == null || ceiling == null -> {
+            category = "GREY"
+            color = Color(0xFF9E9E9E)
         }
-
-        val result = parseManualTaf(raw)
-        forecast = result
-        forecastStatus = if (result.isEmpty()) {
-            "Could not read TAF validity period"
-        } else {
-            "Manual TAF analyzed (FM and initial groups)"
+        visibility >= 8 && ceiling >= 2500 -> {
+            category = "BLUE"
+            color = Color(0xFF42A5F5)
+        }
+        visibility >= 5 && ceiling >= 1500 -> {
+            category = "GREEN"
+            color = Color(0xFF4CAF50)
+        }
+        visibility >= 5 && ceiling >= 1000 -> {
+            category = "GREEN / YELLOW"
+            color = Color(0xFFCDDC39)
+        }
+        visibility >= 3 && ceiling >= 500 -> {
+            category = "YELLOW"
+            color = Color(0xFFFFEB3B)
+        }
+        visibility >= 1.5 && ceiling >= 350 -> {
+            category = "YELLOW / RED"
+            color = Color(0xFFFF9800)
+        }
+        else -> {
+            category = "RED"
+            color = Color(0xFFF44336)
         }
     }
 
-    MaterialTheme {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = background
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                Text(
-                    "SKY METAR GLOBAL",
-                    color = white,
-                    fontSize = 25.sp,
-                    fontWeight = FontWeight.Bold
+    return MetarResult(
+        station,
+        raw,
+        visibility,
+        ceiling,
+        category,
+        color
+    )
+}
+
+fun parseCloudLayers(raw: String): List<CloudLayer> {
+    val regex = Regex(
+        "\\b(FEW|SCT|BKN|OVC|VV)(\\d{3})(CB|TCU)?\\b"
+    )
+
+    return regex.findAll(raw.uppercase(Locale.US)).map {
+        CloudLayer(
+            amount = it.groupValues[1],
+            altitude = it.groupValues[2].toInt() * 100,
+            type = it.groupValues[3]
+        )
+    }.toList()
+}
+
+fun searchAirports(
+    city: String,
+    callback: (List<Airport>, String) -> Unit
+) {
+    thread {
+        try {
+            val url = URL(
+                "https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/airports.csv"
+            )
+
+            val connection = url.openConnection() as HttpURLConnection
+            connection.connectTimeout = 20000
+            connection.readTimeout = 30000
+
+            val lines = connection.inputStream.bufferedReader().readLines()
+            connection.disconnect()
+
+            val results = lines.drop(1).mapNotNull { line ->
+                val fields = line.split(",")
+                if (fields.size < 14) return@mapNotNull null
+
+                val name = fields[3].trim('"')
+                val municipality = fields[10].trim('"')
+                val icao = fields[5].trim('"')
+                val type = fields[2].trim('"')
+                val scheduled = fields[13].trim('"')
+
+                if (
+                    municipality.contains(city, ignoreCase = true) &&
+                    (type == "large_airport" || type == "medium_airport") &&
+                    scheduled == "yes" &&
+                    icao.matches(Regex("[A-Z]{4}"))
+                ) {
+                    Airport(name, icao, municipality)
+                } else null
+            }.take(30)
+
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                callback(
+                    results,
+                    if (results.isEmpty()) "No airports found for this city." else ""
                 )
-
-                Text(
-                    "GLOBAL AVIATION WEATHER",
-                    color = muted,
-                    fontSize = 12.sp
-                )
-
-                OutlinedTextField(
-                    value = station,
-                    onValueChange = {
-                        station = it.uppercase(Locale.US)
-                            .filter { c -> c.isLetterOrDigit() }
-                            .take(4)
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("ICAO AIRPORT CODE") },
-                    placeholder = { Text("Example: GMMN") },
-                    keyboardOptions = KeyboardOptions(
-                        capitalization = KeyboardCapitalization.Characters,
-                        keyboardType = KeyboardType.Ascii
-                    )
-                )
-
-                Text(
-                    "METAR — CURRENT OBSERVATION",
-                    color = white,
-                    fontWeight = FontWeight.Bold
-                )
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { mode = "LIVE" },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("LIVE METAR")
-                    }
-                    Button(
-                        onClick = { mode = "MANUAL" },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("MANUAL METAR")
-                    }
-                }
-
-                if (mode == "LIVE") {
-                    Button(
-                        onClick = { searchLiveMetar() },
-                        enabled = !loading,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("SEARCH LIVE METAR")
-                    }
-                } else {
-                    OutlinedTextField(
-                        value = manualReport,
-                        onValueChange = {
-                            manualReport = it.uppercase(Locale.US)
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 130.dp),
-                        label = { Text("PASTE OR TYPE METAR") },
-                        keyboardOptions = KeyboardOptions(
-                            capitalization = KeyboardCapitalization.Characters,
-                            keyboardType = KeyboardType.Ascii
-                        )
-                    )
-
-                    Button(
-                        onClick = { analyzeManualMetar() },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("ANALYZE METAR")
-                    }
-                }
-
-                Text(status, color = muted, fontSize = 12.sp)
-
-                if (airport.isNotEmpty()) {
-                    Text(
-                        airport,
-                        color = white,
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    Text("OBSERVATION: $observation", color = muted)
-
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = panel),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text("FINAL METAR CATEGORY", color = muted)
-
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(45.dp)
-                                        .background(
-                                            finalCategory?.color ?: Color.DarkGray,
-                                            RoundedCornerShape(8.dp)
-                                        )
-                                )
-                                Spacer(Modifier.width(12.dp))
-                                Text(
-                                    finalCategory?.name ?: "UNAVAILABLE",
-                                    color = white,
-                                    fontSize = 20.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-
-                    Text("WEATHER DETAILS", color = white, fontWeight = FontWeight.Bold)
-                    Text("TEMPERATURE: $temperature", color = white)
-                    Text("DEW POINT: $dewpoint", color = white)
-                    Text("WIND: $wind", color = white)
-                    Text("VISIBILITY: $visibility", color = white)
-                    Text("PRESSURE: $pressure", color = white)
-
-                    HorizontalDivider(color = muted)
-
-                    Text("CLOUD LAYERS", color = white, fontWeight = FontWeight.Bold)
-
-                    if (clouds.layers.isEmpty()) {
-                        Text("No cloud layers reported", color = muted)
-                    } else {
-                        clouds.layers.forEach { layer ->
-                            Text(
-                                "☁ ${layer.code} — ${layer.oktas} — " +
-                                    (layer.height?.let { "$it ft" } ?: "Height unavailable") +
-                                    if (layer.type.isNotEmpty()) " — ${layer.type}" else "",
-                                color = Color(0xFFB9D9F2)
-                            )
-                        }
-                    }
-
-                    Text(
-                        "CLOUD CEILING: " +
-                            (clouds.ceiling?.let { "$it ft" } ?: "No ceiling reported"),
-                        color = white
-                    )
-
-                    Text(
-                        "RAW METAR: $rawReport",
-                        color = Color(0xFFB9D9F2)
-                    )
-                }
-
-                HorizontalDivider(color = muted)
-
-                Text(
-                    "☁ 8-HOUR CLOUD FORECAST",
-                    color = white,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
-                )
-
-                Text(
-                    "Forecast time is displayed in UTC",
-                    color = muted,
-                    fontSize = 11.sp
-                )
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { tafMode = "LIVE" },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("LIVE TAF")
-                    }
-                    Button(
-                        onClick = { tafMode = "MANUAL" },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("MANUAL TAF")
-                    }
-                }
-
-                if (tafMode == "LIVE") {
-                    Button(
-                        onClick = { searchLiveTaf() },
-                        enabled = !loading,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("GET 8-HOUR TAF FORECAST")
-                    }
-                } else {
-                    OutlinedTextField(
-                        value = manualTaf,
-                        onValueChange = {
-                            manualTaf = it.uppercase(Locale.US)
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 150.dp),
-                        label = { Text("PASTE OR TYPE TAF") },
-                        placeholder = {
-                            Text("TAF GMMN 191000Z 1912/2012 02010KT 8000 SCT030")
-                        },
-                        keyboardOptions = KeyboardOptions(
-                            capitalization = KeyboardCapitalization.Characters,
-                            keyboardType = KeyboardType.Ascii
-                        )
-                    )
-
-                    Button(
-                        onClick = { analyzeManualTaf() },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("ANALYZE MANUAL TAF")
-                    }
-                }
-
-                Text(forecastStatus, color = muted, fontSize = 12.sp)
-
-                forecast.forEach { hour ->
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = panel),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(13.dp),
-                            verticalArrangement = Arrangement.spacedBy(7.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    hour.time,
-                                    color = white,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    if (hour.available) "FORECAST" else "NO DATA",
-                                    color = if (hour.available) {
-                                        Color(0xFF72D59B)
-                                    } else {
-                                        Color(0xFFFFB74D)
-                                    },
-                                    fontSize = 11.sp
-                                )
-                            }
-
-                            if (!hour.available) {
-                                Text("No TAF data for this hour", color = muted)
-                            } else if (hour.layers.isEmpty()) {
-                                Text("No cloud layer reported", color = Color(0xFFB9D9F2))
-                            } else {
-                                hour.layers.forEach { layer ->
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        Text("☁️", fontSize = 23.sp)
-                                        Column {
-                                            Text(
-                                                layer.cover,
-                                                color = white,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                            Text(
-                                                "Base: " +
-                                                    (layer.baseFt?.let { "$it ft" }
-                                                        ?: "Unavailable") +
-                                                    " | Type: ${layer.type}",
-                                                color = Color(0xFFB9D9F2),
-                                                fontSize = 11.sp
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
-                            Text(
-                                "CEILING: " +
-                                    (hour.ceilingFt?.let { "$it ft" } ?: "Not reported"),
-                                color = white,
-                                fontSize = 12.sp
-                            )
-                        }
-                    }
-                }
-
-                // رقم 2: استدعاء المنحنى في المكان الصحيح
-                CloudProfileChart(forecast)
-
-                Text(
-                    "Cloud profile: cloud base heights are shown in feet AGL when supplied by TAF.",
-                    color = muted,
-                    fontSize = 11.sp
-                )
-
-                HorizontalDivider(color = muted)
-
-                Text(
-                    "DATA SOURCE: AviationWeather.gov",
-                    color = muted,
-                    fontSize = 11.sp
-                )
-
-                Text(
-                    "For weather information only. Not for operational flight decisions.",
-                    color = muted,
-                    fontSize = 10.sp
-                )
+            }
+        } catch (e: Exception) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                callback(emptyList(), "Airport search error: ${e.message}")
             }
         }
     }
